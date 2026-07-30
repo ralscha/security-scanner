@@ -327,15 +327,19 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 	}
 	plannedCost := receipt.ReservedCost
 	for index := range receipt.Jobs {
+		mu.Lock()
 		entry := &receipt.Jobs[index]
 		if entry.Status == "completed" {
+			mu.Unlock()
 			continue
 		}
 		if config.MaxBudget > 0 && plannedCost+config.EstimatedCost > config.MaxBudget {
 			entry.Status, entry.Error = "budget_exceeded", "estimated budget exhausted before scheduling"
+			mu.Unlock()
 			continue
 		}
 		plannedCost += config.EstimatedCost
+		mu.Unlock()
 		select {
 		case queue <- index:
 		case <-ctx.Done():

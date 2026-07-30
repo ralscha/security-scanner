@@ -1,0 +1,129 @@
+package scan
+
+import "time"
+
+const SchemaVersion = "1"
+
+type Severity string
+
+const (
+	SeverityCritical Severity = "critical"
+	SeverityHigh     Severity = "high"
+	SeverityMedium   Severity = "medium"
+	SeverityLow      Severity = "low"
+	SeverityInfo     Severity = "info"
+)
+
+type Confidence string
+
+const (
+	ConfidenceHigh   Confidence = "high"
+	ConfidenceMedium Confidence = "medium"
+	ConfidenceLow    Confidence = "low"
+)
+
+type Location struct {
+	Path      string `json:"path" jsonschema:"description=Repository-relative path"`
+	StartLine int    `json:"start_line" jsonschema:"description=First affected line,minimum=1"`
+	EndLine   int    `json:"end_line,omitempty" jsonschema:"description=Last affected line,minimum=1"`
+	Role      string `json:"role" jsonschema:"description=Security role such as source root_control sink entrypoint or evidence"`
+	Snippet   string `json:"snippet,omitempty"`
+}
+
+type FindingDraft struct {
+	Title       string     `json:"title" jsonschema:"description=Specific vulnerability title"`
+	Severity    Severity   `json:"severity" jsonschema:"enum=critical,enum=high,enum=medium,enum=low,enum=info"`
+	Confidence  Confidence `json:"confidence" jsonschema:"enum=high,enum=medium,enum=low"`
+	CWEIDs      []string   `json:"cwe_ids" jsonschema:"description=Applicable CWE identifiers such as CWE-79"`
+	Summary     string     `json:"summary" jsonschema:"description=Concise description of the broken security control"`
+	Impact      string     `json:"impact" jsonschema:"description=Concrete attacker impact"`
+	Evidence    string     `json:"evidence" jsonschema:"description=Source to sink evidence grounded in the code"`
+	Remediation string     `json:"remediation" jsonschema:"description=Actionable fix for the root cause"`
+	AttackPath  string     `json:"attack_path" jsonschema:"description=Realistic reachability and preconditions"`
+	Locations   []Location `json:"locations" jsonschema:"description=All source control and sink locations"`
+}
+
+type Finding struct {
+	ID          string `json:"id"`
+	Fingerprint string `json:"fingerprint"`
+	FindingDraft
+}
+
+type Submission struct {
+	ThreatModel string         `json:"threat_model" jsonschema:"description=Trust boundaries assets attacker capabilities and exposed entrypoints"`
+	Findings    []FindingDraft `json:"findings" jsonschema:"description=Only validated and realistically reachable findings; empty is valid"`
+	Gaps        []string       `json:"gaps,omitempty" jsonschema:"description=Analysis limitations unrelated to automatically measured file coverage"`
+}
+
+type File struct {
+	Path       string `json:"path"`
+	Size       int64  `json:"size"`
+	Lines      int    `json:"lines"`
+	Language   string `json:"language,omitempty"`
+	Reviewable bool   `json:"reviewable"`
+	SkipReason string `json:"skip_reason,omitempty"`
+}
+
+type Inventory struct {
+	Root  string `json:"root"`
+	Files []File `json:"files"`
+}
+
+type CoverageFile struct {
+	Path    string `json:"path"`
+	Outcome string `json:"outcome"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+type CoverageSummary struct {
+	Total      int `json:"total"`
+	Reviewed   int `json:"reviewed"`
+	Unreviewed int `json:"unreviewed"`
+	Skipped    int `json:"skipped"`
+}
+
+type CoverageDocument struct {
+	SchemaVersion string          `json:"schema_version"`
+	Summary       CoverageSummary `json:"summary"`
+	Files         []CoverageFile  `json:"files"`
+}
+
+type FindingsDocument struct {
+	SchemaVersion string    `json:"schema_version"`
+	ScanID        string    `json:"scan_id"`
+	ThreatModel   string    `json:"threat_model"`
+	Findings      []Finding `json:"findings"`
+	Gaps          []string  `json:"gaps,omitempty"`
+}
+
+type TimingBreakdown struct {
+	PreparationMS int64 `json:"preparation_ms"`
+	AnalysisMS    int64 `json:"analysis_ms"`
+}
+
+type ScanManifest struct {
+	SchemaVersion string            `json:"schema_version"`
+	ScanID        string            `json:"scan_id"`
+	Status        string            `json:"status"`
+	Target        string            `json:"target"`
+	Provider      string            `json:"provider"`
+	Model         string            `json:"model"`
+	TargetMode    string            `json:"target_mode,omitempty"`
+	TargetRef     string            `json:"target_ref,omitempty"`
+	TargetPaths   []string          `json:"target_paths,omitempty"`
+	StartedAt     time.Time         `json:"started_at"`
+	CompletedAt   time.Time         `json:"completed_at"`
+	Artifacts     map[string]string `json:"artifacts"`
+	FilesTotal    int               `json:"files_total"`
+	FilesReviewed int               `json:"files_reviewed"`
+	FindingCount  int               `json:"finding_count"`
+	DurationMS    int64             `json:"duration_ms"`
+	Timings       TimingBreakdown   `json:"timings"`
+}
+
+type Result struct {
+	Manifest ScanManifest
+	Findings FindingsDocument
+	Coverage CoverageDocument
+	OutDir   string
+}

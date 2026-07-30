@@ -1,0 +1,88 @@
+version: '3'
+
+tasks:
+
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  format:
+    desc: Format Go code
+    cmds:
+      - go fix ./...
+      - go fmt ./...
+
+  test:
+    desc: Run the Go test suite
+    cmds:
+      - go test ./...
+
+  race:
+    desc: Run the Go race detector (requires CGO and a C compiler)
+    env:
+      CGO_ENABLED: '1'
+    cmds:
+      - go test -race ./...
+
+  build:
+    desc: Build the security scanner
+    cmds:
+      - go build -o security-scanner{{exeExt}} ./cmd/security-scanner
+
+  vet:
+    desc: Run Go static analysis
+    cmds:
+      - go vet ./...
+
+  lint:
+    desc: Run golangci-lint in a Docker container
+    cmds:
+      - docker run --rm -v {{toSlash .ROOT_DIR}}:/app -w /app golangci/golangci-lint:v2.12.2 golangci-lint run -v --timeout 10m
+
+  verify:
+    desc: Run local verification gates
+    deps: [test, vet, build, lint]
+
+  tag:
+    desc: Create an annotated local release tag
+    requires:
+      vars: [TAG]
+    preconditions:
+      - sh: 'case "{{.TAG}}" in v[0-9]*.[0-9]*.[0-9]*) exit 0 ;; *) exit 1 ;; esac'
+        msg: TAG must be a semantic version starting with v, for example v1.0.0
+      - sh: 'git diff --quiet && git diff --cached --quiet'
+        msg: Release tags require a clean working tree
+      - sh: 'if git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1; then exit 1; fi; exit 0'
+        msg: Tag already exists locally
+    cmds:
+      - git tag -a {{.TAG}} -m "Release {{.TAG}}"
+
+  push-tag:
+    desc: Push an existing release tag
+    requires:
+      vars: [TAG]
+    preconditions:
+      - sh: 'case "{{.TAG}}" in v[0-9]*.[0-9]*.[0-9]*) exit 0 ;; *) exit 1 ;; esac'
+        msg: TAG must be a semantic version starting with v, for example v1.0.0
+      - sh: 'git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1'
+        msg: Tag does not exist locally
+    cmds:
+      - git push origin {{.TAG}}
+
+  release-tag:
+    desc: Verify, create, and push an annotated release tag
+    requires:
+      vars: [TAG]
+    preconditions:
+      - sh: 'case "{{.TAG}}" in v[0-9]*.[0-9]*.[0-9]*) exit 0 ;; *) exit 1 ;; esac'
+        msg: TAG must be a semantic version starting with v, for example v1.0.0
+      - sh: 'git diff --quiet && git diff --cached --quiet'
+        msg: Releases require a clean working tree
+      - sh: 'if git rev-parse -q --verify "refs/tags/{{.TAG}}" >/dev/null 2>&1; then exit 1; fi; exit 0'
+        msg: Tag already exists locally
+    cmds:
+      - task: verify
+      - git tag -a {{.TAG}} -m "Release {{.TAG}}"
+      - git push origin {{.TAG}}

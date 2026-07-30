@@ -34,7 +34,7 @@ Requires Go 1.25.5 or newer.
 go build -o security-scanner ./cmd/security-scanner
 ```
 
-Tagged releases publish `tar.gz` archives for Linux and macOS and `.zip` archives for Windows, on both AMD64 and ARM64. After extracting an archive:
+Prebuilt binaries are available from the [GitHub Releases page](https://github.com/ralscha/security-scanner/releases). After extracting an archive:
 
 ```bash
 ./security-scanner version

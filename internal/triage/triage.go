@@ -113,7 +113,11 @@ func (s *Store) List() ([]Decision, error) {
 }
 
 func (s *Store) load() (document, error) {
-	data, err := os.ReadFile(s.path)
+	guard, err := output.EnsurePrivateDir(filepath.Dir(s.path))
+	if err != nil {
+		return document{}, fmt.Errorf("prepare private triage directory: %w", err)
+	}
+	data, err := output.ReadPrivateFile(guard, filepath.Base(s.path))
 	if os.IsNotExist(err) {
 		return document{SchemaVersion: "1", Decisions: []Decision{}}, nil
 	}
@@ -129,38 +133,16 @@ func (s *Store) load() (document, error) {
 
 func (s *Store) save(doc document) error {
 	doc.SchemaVersion = "1"
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o750); err != nil {
-		return err
+	guard, err := output.EnsurePrivateDir(filepath.Dir(s.path))
+	if err != nil {
+		return fmt.Errorf("prepare private triage directory: %w", err)
 	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	temp, err := os.CreateTemp(filepath.Dir(s.path), ".triage-*.tmp")
-	if err != nil {
-		return err
-	}
-	name := temp.Name()
-	defer func() { _ = os.Remove(name) }()
-	if err := temp.Chmod(0o600); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if _, err := temp.Write(data); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(name, s.path); err == nil {
-		return nil
-	}
-	if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return os.Rename(name, s.path)
+	return output.WritePrivateFileAtomic(guard, filepath.Base(s.path), data)
 }
 
 func decisionKey(decision Decision) string {

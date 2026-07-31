@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,16 @@ import (
 
 	"security-scanner/internal/scan"
 )
+
+func TestModelToolResultRedactsCredentials(t *testing.T) {
+	result, err := modelToolResult("read_file", "", errors.New("api_key=super-secret-value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result, "super-secret-value") || !strings.Contains(result, "[redacted]") {
+		t.Fatalf("credential escaped into model tool result: %s", result)
+	}
+}
 
 func TestRepositoryReadTrackingAndSearch(t *testing.T) {
 	root := t.TempDir()

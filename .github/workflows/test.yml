@@ -14,10 +14,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -40,4 +42,4 @@ jobs:
         run: go build ./cmd/security-scanner
 
       - name: Run lint
-        run: docker run --rm -v "$PWD:/app" -w /app golangci/golangci-lint:v2.12.2 golangci-lint run --timeout 10m
+        run: docker run --rm -v "$PWD:/app" -w /app golangci/golangci-lint:v2.12.2@sha256:6ffe652d2215f590fcf6c6edcda8959c7a765a09378c200d31e098f7516f16c9 golangci-lint run --timeout 10m

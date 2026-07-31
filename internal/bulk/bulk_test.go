@@ -1,6 +1,7 @@
 package bulk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -149,6 +150,39 @@ func TestRunBudgetGuardrailAndNonTransientFailure(t *testing.T) {
 	}
 	if calls.Load() != 1 || receipt.Jobs[0].Attempts != 1 || receipt.Jobs[1].Status != "budget_exceeded" {
 		t.Fatalf("unexpected guardrail/retry behavior: calls=%d receipt=%#v", calls.Load(), receipt)
+	}
+}
+
+func TestRunRedactsErrorsBeforeEventsAndReceiptPersistence(t *testing.T) {
+	jobs, err := BuildJobs([]string{t.TempDir()}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	var events []Event
+	receipt, err := Run(context.Background(), jobs, func(context.Context, Job) (string, error) {
+		return "", errors.New("provider rejected authorization: Bearer super-secret-value")
+	}, Config{
+		Workers: 1, ReceiptPath: receiptPath,
+		OnEvent: func(event Event) { events = append(events, event) },
+	})
+	if err == nil {
+		t.Fatal("expected incomplete bulk result")
+	}
+	if len(receipt.Jobs) != 1 || strings.Contains(receipt.Jobs[0].Error, "super-secret-value") || !strings.Contains(receipt.Jobs[0].Error, "[redacted]") {
+		t.Fatalf("receipt was not redacted: %#v", receipt.Jobs)
+	}
+	for _, event := range events {
+		if strings.Contains(event.Message, "super-secret-value") {
+			t.Fatalf("event leaked credential: %#v", event)
+		}
+	}
+	data, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("super-secret-value")) || !bytes.Contains(data, []byte("[redacted]")) {
+		t.Fatalf("persisted receipt was not redacted: %s", data)
 	}
 }
 

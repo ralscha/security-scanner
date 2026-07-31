@@ -11,6 +11,7 @@ require (
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/cloudwego/eino-ext/components/model/openrouter v0.1.10
 	github.com/git-pkgs/gitignore v1.2.0
+	golang.org/x/sys v0.47.0
 	google.golang.org/genai v1.66.0
 )
 
@@ -97,7 +98,6 @@ require (
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/api v0.291.0 // indirect

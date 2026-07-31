@@ -16,6 +16,7 @@ import (
 	"time"
 
 	outputpolicy "security-scanner/internal/output"
+	"security-scanner/internal/redact"
 )
 
 type Job struct {
@@ -157,7 +158,7 @@ func PrepareJobs(jobs []Job, outputDir string) ([]Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	absOutput, err := filepath.Abs(outputDir)
+	absOutput, err := outputpolicy.ResolvePath(outputDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve bulk output directory: %w", err)
 	}
@@ -297,7 +298,7 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 						break
 					}
 					delay := config.RetryDelay * time.Duration(1<<(attempt-1))
-					emit(Event{Type: "job_retry", JobID: job.ID, Attempt: attempt, Message: runErr.Error()})
+					emit(Event{Type: "job_retry", JobID: job.ID, Attempt: attempt, Message: redact.Text(runErr.Error())})
 					timer := time.NewTimer(delay)
 					select {
 					case <-ctx.Done():
@@ -313,7 +314,7 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 				if runErr == nil {
 					entry.Status = "completed"
 				} else {
-					entry.Status, entry.Error = "failed", runErr.Error()
+					entry.Status, entry.Error = "failed", redact.Text(runErr.Error())
 				}
 				persistLocked()
 				status, message := entry.Status, entry.Error
@@ -363,7 +364,11 @@ func initialReceipt(jobs []Job, config Config) (Receipt, error) {
 	receipt := Receipt{SchemaVersion: "1", Status: "running", StartedAt: now, UpdatedAt: now, Jobs: make([]JobReceipt, 0, len(jobs))}
 	previous := make(map[string]JobReceipt)
 	if config.Resume {
-		data, err := os.ReadFile(config.ReceiptPath)
+		guard, err := outputpolicy.EnsurePrivateDir(filepath.Dir(config.ReceiptPath))
+		if err != nil {
+			return Receipt{}, fmt.Errorf("prepare private receipt directory: %w", err)
+		}
+		data, err := outputpolicy.ReadPrivateFile(guard, filepath.Base(config.ReceiptPath))
 		if err != nil && !os.IsNotExist(err) {
 			return Receipt{}, fmt.Errorf("read bulk receipt: %w", err)
 		}
@@ -432,35 +437,13 @@ func saveReceipt(path string, receipt Receipt) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("receipt path is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return err
+	guard, err := outputpolicy.EnsurePrivateDir(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("prepare private receipt directory: %w", err)
 	}
 	data, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".bulk-*.tmp")
-	if err != nil {
-		return err
-	}
-	name := temp.Name()
-	defer func() { _ = os.Remove(name) }()
-	if err := temp.Chmod(0o600); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if _, err := temp.Write(append(data, '\n')); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(name, path); err == nil {
-		return nil
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return os.Rename(name, path)
+	return outputpolicy.WritePrivateFileAtomic(guard, filepath.Base(path), append(data, '\n'))
 }

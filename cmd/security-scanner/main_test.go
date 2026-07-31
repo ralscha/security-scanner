@@ -156,6 +156,18 @@ func TestPreflightJSONDoesNotCallModel(t *testing.T) {
 	}
 }
 
+func TestPreflightJSONRedactsCredentialsInTargetErrors(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "api_key=super-secret-value")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"scan", "preflight", "--target", missing, "--json"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "super-secret-value") || !strings.Contains(stdout.String(), "[redacted]") {
+		t.Fatalf("credential escaped into JSON preflight error: %s", stdout.String())
+	}
+}
+
 func TestLifecycleAndBulkCommandsValidateArguments(t *testing.T) {
 	for _, args := range [][]string{{"scans"}, {"bulk-scan"}, {"findings", "false-positive", "F-1"}} {
 		var stdout, stderr bytes.Buffer

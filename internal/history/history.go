@@ -121,7 +121,11 @@ func (s *Store) Get(scanID string) (Record, error) {
 }
 
 func (s *Store) load() (Index, error) {
-	data, err := os.ReadFile(s.path)
+	guard, err := output.EnsurePrivateDir(filepath.Dir(s.path))
+	if err != nil {
+		return Index{}, fmt.Errorf("prepare private history directory: %w", err)
+	}
+	data, err := output.ReadPrivateFile(guard, filepath.Base(s.path))
 	if os.IsNotExist(err) {
 		return Index{SchemaVersion: schemaVersion, Scans: []Record{}}, nil
 	}
@@ -140,42 +144,16 @@ func (s *Store) load() (Index, error) {
 
 func (s *Store) save(index Index) error {
 	index.SchemaVersion = schemaVersion
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o750); err != nil {
-		return fmt.Errorf("create history directory: %w", err)
+	guard, err := output.EnsurePrivateDir(filepath.Dir(s.path))
+	if err != nil {
+		return fmt.Errorf("prepare private history directory: %w", err)
 	}
 	data, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode history index: %w", err)
 	}
 	data = append(data, '\n')
-	temp, err := os.CreateTemp(filepath.Dir(s.path), ".history-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create history temporary file: %w", err)
-	}
-	tempPath := temp.Name()
-	defer func() { _ = os.Remove(tempPath) }() // The primary write error takes precedence.
-	if err := temp.Chmod(0o600); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if _, err := temp.Write(data); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tempPath, s.path); err == nil {
-		return nil
-	}
-	if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return os.Rename(tempPath, s.path)
+	return output.WritePrivateFileAtomic(guard, filepath.Base(s.path), data)
 }
 
 func samePath(left, right string) bool {
@@ -185,12 +163,17 @@ func samePath(left, right string) bool {
 
 func LoadResult(record Record) (*scan.Result, error) {
 	result := &scan.Result{OutDir: record.OutputDir}
+	guard, err := output.OpenPrivateDir(record.OutputDir)
+	if err != nil {
+		return nil, fmt.Errorf("validate private output for scan %s: %w", record.ScanID, err)
+	}
+	result.OutDir = guard.Path()
 	for name, destination := range map[string]any{
 		"scan-manifest.json": &result.Manifest,
 		"findings.json":      &result.Findings,
 		"coverage.json":      &result.Coverage,
 	} {
-		data, err := os.ReadFile(filepath.Join(record.OutputDir, name))
+		data, err := output.ReadPrivateFile(guard, name)
 		if err != nil {
 			return nil, fmt.Errorf("read %s for scan %s: %w", name, record.ScanID, err)
 		}

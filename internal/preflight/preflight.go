@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"security-scanner/internal/app"
+	"security-scanner/internal/redact"
 )
 
 type Check struct {
@@ -26,7 +27,7 @@ type Result struct {
 func Run(_ context.Context, opts app.Options) Result {
 	prepared, err := app.Prepare(opts, time.Now().UTC())
 	if err != nil {
-		return Result{Checks: []Check{{Name: "configuration", Status: "error", Message: err.Error()}}}
+		return Result{Checks: []Check{{Name: "configuration", Status: "error", Message: redact.Text(err.Error())}}}
 	}
 	return Result{
 		OK: true, Target: prepared.Target, OutputDir: prepared.OutputDir,

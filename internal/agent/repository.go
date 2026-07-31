@@ -15,6 +15,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
 
+	"security-scanner/internal/redact"
 	"security-scanner/internal/scan"
 )
 
@@ -170,7 +171,7 @@ func modelToolResult(name, result string, err error) (string, error) {
 		OK    bool   `json:"ok"`
 		Tool  string `json:"tool"`
 		Error string `json:"error"`
-	}{OK: false, Tool: name, Error: err.Error()})
+	}{OK: false, Tool: name, Error: redact.Text(err.Error())})
 	if marshalErr != nil {
 		return "", marshalErr
 	}

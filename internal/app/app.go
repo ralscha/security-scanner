@@ -64,6 +64,10 @@ func Run(ctx context.Context, opts Options) (*scan.Result, error) {
 	} else if archived != "" && opts.Progress != nil {
 		opts.Progress("archived existing output to " + archived)
 	}
+	outputGuard, err := output.PreparePrivateDir(prepared.OutputDir)
+	if err != nil {
+		return nil, fmt.Errorf("prepare private output directory: %w", err)
+	}
 	chatModel, resolvedModel, err := llm.DefaultRegistry().Build(ctx, prepared.Model)
 	if err != nil {
 		return nil, err
@@ -100,6 +104,7 @@ func Run(ctx context.Context, opts Options) (*scan.Result, error) {
 		TargetPaths:         opts.Includes,
 		PreparationDuration: preparationDuration,
 		AnalysisDuration:    time.Since(analysisStarted),
+		OutputGuard:         outputGuard,
 	})
 	if err != nil {
 		return nil, err
@@ -141,7 +146,7 @@ func Prepare(opts Options, started time.Time) (*Preparation, error) {
 	if err := rejectOutputSymlinks(absTarget, opts.OutputDir); err != nil {
 		return nil, err
 	}
-	if err := output.Validate(context.Background(), absTarget, opts.OutputDir, opts.ArchiveExisting); err != nil {
+	if opts.OutputDir, err = output.Validate(context.Background(), absTarget, opts.OutputDir, opts.ArchiveExisting); err != nil {
 		return nil, err
 	}
 	if opts.MaxFileBytes <= 0 {

@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"security-scanner/internal/output"
 )
 
 type CoverageTracker interface {
@@ -27,6 +29,7 @@ type FinalizeOptions struct {
 	TargetPaths         []string
 	PreparationDuration time.Duration
 	AnalysisDuration    time.Duration
+	OutputGuard         *output.Guard
 }
 
 func Finalize(inv *Inventory, tracker CoverageTracker, submission Submission, opts FinalizeOptions) (*Result, error) {
@@ -82,7 +85,15 @@ func Finalize(inv *Inventory, tracker CoverageTracker, submission Submission, op
 		},
 	}
 	result := &Result{Manifest: manifest, Findings: findingsDoc, Coverage: coverage, OutDir: opts.OutputDir}
-	if err := writeArtifacts(result); err != nil {
+	guard := opts.OutputGuard
+	if guard == nil {
+		prepared, err := output.PreparePrivateDir(opts.OutputDir)
+		if err != nil {
+			return nil, fmt.Errorf("prepare private output directory: %w", err)
+		}
+		guard = prepared
+	}
+	if err := writeArtifacts(result, guard); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -111,10 +122,7 @@ func buildCoverage(inv *Inventory, tracker CoverageTracker) CoverageDocument {
 	return doc
 }
 
-func writeArtifacts(result *Result) error {
-	if err := os.MkdirAll(result.OutDir, 0o750); err != nil {
-		return fmt.Errorf("create output directory: %w", err)
-	}
+func writeArtifacts(result *Result, guard *output.Guard) error {
 	artifacts := []struct {
 		name string
 		data []byte
@@ -126,7 +134,10 @@ func writeArtifacts(result *Result) error {
 		{name: "scan-manifest.json", data: mustJSON(result.Manifest)},
 	}
 	for _, artifact := range artifacts {
-		if err := writeAtomic(filepath.Join(result.OutDir, artifact.name), artifact.data, 0o600); err != nil {
+		if err := guard.Validate(); err != nil {
+			return fmt.Errorf("validate private output before writing %s: %w", artifact.name, err)
+		}
+		if err := output.WritePrivateFileAtomic(guard, artifact.name, artifact.data); err != nil {
 			return fmt.Errorf("write %s: %w", artifact.name, err)
 		}
 	}
@@ -139,42 +150,6 @@ func mustJSON(value any) []byte {
 		panic(err)
 	}
 	return append(data, '\n')
-}
-
-func writeAtomic(path string, data []byte, mode os.FileMode) (err error) {
-	dir := filepath.Dir(path)
-	temp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tempPath := temp.Name()
-	defer func() {
-		if removeErr := os.Remove(tempPath); err == nil && removeErr != nil && !os.IsNotExist(removeErr) {
-			err = removeErr
-		}
-	}()
-	if err := temp.Chmod(mode); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if _, err := temp.Write(data); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tempPath, path); err == nil {
-		return nil
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return os.Rename(tempPath, path)
 }
 
 func renderMarkdown(result *Result) []byte {

@@ -185,7 +185,7 @@ Each scan writes:
 - `report.md`: human-readable report derived from the canonical documents.
 - `results.sarif`: SARIF 2.1.0 results for code scanning integrations.
 
-By default, artifacts are written below the per-user scanner state directory. An explicit `--output-dir` is resolved to an absolute path and may be anywhere except the scan target itself. A destination inside the target is excluded from the fixed file inventory. A non-empty destination is rejected unless `--archive-existing` is supplied; in that case it is atomically renamed to a timestamped sibling before the new scan starts. Bulk scan output must remain outside every scanned worktree to keep concurrent inventories isolated.
+By default, artifacts are written below the per-user scanner state directory. An explicit `--output-dir` is resolved to an absolute, canonical path and may be anywhere except the scan target itself. A destination inside the target is excluded from the fixed file inventory. Scan directories and artifacts are private to the current operating-system user: POSIX output directories must use mode `0700` and have trusted, non-writable ancestry; Windows output receives a protected current-user-only ACL. A non-empty destination is rejected unless `--archive-existing` is supplied; in that case it is atomically renamed to a timestamped sibling before the new scan starts. Bulk scan output must remain outside every scanned worktree to keep concurrent inventories isolated.
 
 A scan is `completed` only when every reviewable text file was read from start to finish. Otherwise it is `completed_with_gaps`, and all unread files are listed.
 

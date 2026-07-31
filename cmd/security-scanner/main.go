@@ -21,8 +21,10 @@ import (
 	"security-scanner/internal/history"
 	"security-scanner/internal/llm"
 	matchengine "security-scanner/internal/match"
+	"security-scanner/internal/output"
 	"security-scanner/internal/policy"
 	"security-scanner/internal/preflight"
+	"security-scanner/internal/redact"
 	"security-scanner/internal/remediation"
 	"security-scanner/internal/scan"
 	"security-scanner/internal/targeting"
@@ -37,7 +39,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	checkedStdout := &checkedWriter{writer: stdout}
-	checkedStderr := &checkedWriter{writer: stderr}
+	checkedStderr := &checkedWriter{writer: redact.Writer(stderr)}
 	code := runCommand(args, checkedStdout, checkedStderr)
 	if checkedStdout.Err() != nil || checkedStderr.Err() != nil {
 		return 2
@@ -246,7 +248,7 @@ func runPreflight(args []string, stdout, stderr *checkedWriter) int {
 	ctx := context.Background()
 	resolution, err := targeting.Resolve(ctx, *target, targeting.Selector{Paths: paths, DiffRef: *diffRef, WorkingTree: *workingTree})
 	if err != nil {
-		result := preflight.Result{Checks: []preflight.Check{{Name: "target", Status: "error", Message: err.Error()}}}
+		result := preflight.Result{Checks: []preflight.Check{{Name: "target", Status: "error", Message: redact.Text(err.Error())}}}
 		if *asJSON {
 			_ = writeJSON(result, stdout, stderr)
 		} else {
@@ -807,12 +809,17 @@ func writeNewFile(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(absPath), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o700); err != nil {
 		return err
 	}
 	file, err := os.OpenFile(absPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("create export without overwriting: %w", err)
+	}
+	if err := output.SecurePrivateFile(absPath); err != nil {
+		_ = file.Close()
+		_ = os.Remove(absPath)
+		return fmt.Errorf("secure export: %w", err)
 	}
 	if _, err := file.Write(data); err != nil {
 		_ = file.Close()

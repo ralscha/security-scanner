@@ -2,7 +2,9 @@
 
 ## State And Sensitive Data
 
-Scanner state defaults to the operating system user configuration directory and can be moved with `SECURITY_SCANNER_STATE_DIR`. It contains history and analyst triage. Artifacts may contain sensitive snippets and threat-model context; restrict and expire them like source code. Credentials are never persisted.
+Scanner state defaults to the operating system user configuration directory and can be moved with `SECURITY_SCANNER_STATE_DIR`. It contains history and analyst triage. Scanner-owned directories and files are secured for the current operating-system user (`0700`/`0600` on POSIX and a protected current-user-only ACL on Windows), and their identity is rechecked before sensitive reads and writes. On POSIX, custom output also requires trusted ownership and no group- or world-writable non-sticky ancestor. Artifacts may contain sensitive snippets and threat-model context; restrict and expire them like source code.
+
+Credential-shaped values in runtime failures are redacted before CLI diagnostics, JSON progress events, model tool errors, and bulk receipt persistence. Credentials passed for provider authentication are not written to scanner state; scan artifacts can still quote credential-like source text found in the repository and must be handled as sensitive.
 
 ## Progress And Timing
 
@@ -19,3 +21,13 @@ Eino provider adapters do not expose one consistent usage/cost record through `m
 User interruption returns `130`. Atomic artifacts and receipts use a destination-local temporary file followed by rename.
 
 Track scan duration, reviewed-file counts, coverage gaps, findings by severity, policy violations, retry/failure counts, and reserved bulk budget.
+
+## Release Verification
+
+Release tags must be semantic versions that identify a commit on `main`. The release workflow pins third-party actions to commit SHAs, publishes GoReleaser checksums, and creates GitHub artifact attestations for both the released archives and the checksum manifest. Verify a downloaded artifact with:
+
+```bash
+gh attestation verify security-scanner_VERSION_OS_ARCH.tar.gz --repo ralscha/security-scanner
+```
+
+Windows archives use `.zip` instead of `.tar.gz`.

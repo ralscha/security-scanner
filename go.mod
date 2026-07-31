@@ -1,6 +1,6 @@
 module security-scanner
 
-go 1.25.5
+go 1.26.5
 
 require (
 	github.com/cloudwego/eino v0.9.13

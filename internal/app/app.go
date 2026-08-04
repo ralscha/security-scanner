@@ -35,6 +35,8 @@ type Options struct {
 	MaxIterations       int
 	MaxAgentConcurrency int
 	RequestTimeout      time.Duration
+	MaxDuration         time.Duration
+	FailOnSeverity      string
 	Progress            func(string)
 }
 
@@ -54,6 +56,12 @@ func Run(ctx context.Context, opts Options) (*scan.Result, error) {
 	}
 	if opts.MaxAgentConcurrency == 0 {
 		opts.MaxAgentConcurrency = 4
+	}
+	if opts.MaxFileBytes <= 0 {
+		opts.MaxFileBytes = 1024 * 1024
+	}
+	if opts.MaxIterations <= 0 {
+		opts.MaxIterations = 80
 	}
 	prepared, err := Prepare(opts, started)
 	if err != nil {
@@ -105,6 +113,21 @@ func Run(ctx context.Context, opts Options) (*scan.Result, error) {
 		PreparationDuration: preparationDuration,
 		AnalysisDuration:    time.Since(analysisStarted),
 		OutputGuard:         outputGuard,
+		LaunchConfig: &scan.LaunchConfiguration{
+			AuthMode:               resolvedModel.AuthMode,
+			RequiresExplicitAPIKey: strings.TrimSpace(opts.APIKey) != "",
+			BaseURL:                resolvedModel.BaseURL,
+			APIVersion:             resolvedModel.APIVersion,
+			MaxOutputTokens:        resolvedModel.MaxOutputTokens,
+			UserContext:            opts.UserContext,
+			Excludes:               append([]string(nil), opts.Excludes...),
+			MaxFileBytes:           opts.MaxFileBytes,
+			MaxIterations:          opts.MaxIterations,
+			MaxAgentConcurrency:    opts.MaxAgentConcurrency,
+			RequestTimeout:         resolvedModel.Timeout.String(),
+			MaxDuration:            durationString(opts.MaxDuration),
+			FailOnSeverity:         strings.TrimSpace(opts.FailOnSeverity),
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -117,6 +140,13 @@ func Run(ctx context.Context, opts Options) (*scan.Result, error) {
 		return nil, fmt.Errorf("record scan history: %w", err)
 	}
 	return result, nil
+}
+
+func durationString(duration time.Duration) string {
+	if duration <= 0 {
+		return ""
+	}
+	return duration.String()
 }
 
 // Prepare validates a scan and freezes its inventory without constructing or calling a model.

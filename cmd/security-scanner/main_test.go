@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"testing"
 
+	"security-scanner/internal/history"
 	"security-scanner/internal/scan"
 )
 
@@ -106,6 +107,43 @@ func TestScanDryRunDoesNotCallModel(t *testing.T) {
 	}
 }
 
+func TestScanVerboseDiagnosticsStayOnStderr(t *testing.T) {
+	t.Setenv("SECURITY_SCANNER_LOG_LEVEL", "")
+	t.Setenv("LOG_LEVEL", "")
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"scan", "--dry-run", "--quiet", "--verbose", "--target", root,
+		"--provider", "ollama", "--model", "test-model", "--auth", "none",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	if !json.Valid(stdout.Bytes()) {
+		t.Fatalf("verbose diagnostics corrupted stdout: %s", stdout.String())
+	}
+	for _, event := range []string{"scan.configuration", "scan.target_resolved", "scan.preflight.completed"} {
+		if !strings.Contains(stderr.String(), "security-scanner: debug: "+event) {
+			t.Errorf("missing %s diagnostic:\n%s", event, stderr.String())
+		}
+	}
+}
+
+func TestVerboseDiagnosticsCanBeEnabledByEnvironment(t *testing.T) {
+	t.Setenv("SECURITY_SCANNER_LOG_LEVEL", "debug")
+	t.Setenv("LOG_LEVEL", "")
+	var output bytes.Buffer
+	writer := &checkedWriter{writer: &output}
+	logger := newDiagnosticLogger(false, writer)
+	logger.Log("scan.test", map[string]any{"ok": true})
+	if !logger.Enabled() || !strings.Contains(output.String(), "security-scanner: debug: scan.test") {
+		t.Fatalf("environment did not enable diagnostics: %q", output.String())
+	}
+}
+
 func TestScanRejectsConflictingTargetSelectors(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"scan", "--target", t.TempDir(), "--path", ".", "--working-tree"}, &stdout, &stderr)
@@ -119,7 +157,7 @@ func TestProvidersCommand(t *testing.T) {
 	if code := run([]string{"providers"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	for _, provider := range []string{"openai", "azure-openai", "openai-compatible", "openrouter", "anthropic", "gemini", "ollama", "ark"} {
+	for _, provider := range []string{"openai", "azure-openai", "openai-compatible", "openrouter", "fireworks", "anthropic", "gemini", "ollama", "ark"} {
 		if !bytes.Contains(stdout.Bytes(), []byte(provider)) {
 			t.Errorf("provider output does not contain %q:\n%s", provider, stdout.String())
 		}
@@ -208,4 +246,62 @@ func TestWriteNewFileDoesNotOverwrite(t *testing.T) {
 	if string(data) != "first" {
 		t.Fatalf("export was overwritten: %q", data)
 	}
+}
+
+func TestRerunScanArgsPreserveSavedConfiguration(t *testing.T) {
+	record := history.Record{
+		ScanID: "scan-1", Target: `C:\repo`, Provider: "fireworks", Model: "accounts/fireworks/models/test",
+		TargetMode: "path", TargetPaths: []string{"cmd", "internal/auth"},
+		LaunchConfig: &scan.LaunchConfiguration{
+			AuthMode: "env", BaseURL: "https://example.test/v1", MaxOutputTokens: 4096,
+			UserContext: "internet-facing", Excludes: []string{"vendor"}, MaxFileBytes: 2048,
+			MaxIterations: 12, MaxAgentConcurrency: 3, RequestTimeout: "2m0s", MaxDuration: "15m0s",
+			FailOnSeverity: "high",
+		},
+	}
+	args, err := rerunScanArgs(record, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for flag, value := range map[string]string{
+		"--provider": "fireworks", "--auth": "env", "--base-url": "https://example.test/v1",
+		"--max-output-tokens": "4096", "--context": "internet-facing", "--exclude": "vendor",
+		"--max-file-bytes": "2048", "--max-iterations": "12", "--max-agent-concurrency": "3",
+		"--request-timeout": "2m0s", "--max-duration": "15m0s", "--fail-on-severity": "high",
+	} {
+		if !containsFlagValue(args, flag, value) {
+			t.Errorf("rerun args do not contain %s %q: %#v", flag, value, args)
+		}
+	}
+	if !containsFlagValue(args, "--path", "cmd") || !containsFlagValue(args, "--path", "internal/auth") || !slicesContain(args, "--verbose") {
+		t.Fatalf("rerun targeting or verbose setting was lost: %#v", args)
+	}
+}
+
+func TestRerunScanArgsDoNotPersistExplicitAPIKey(t *testing.T) {
+	_, err := rerunScanArgs(history.Record{
+		Target: t.TempDir(), Provider: "openai", Model: "test",
+		LaunchConfig: &scan.LaunchConfiguration{AuthMode: "auto", RequiresExplicitAPIKey: true},
+	}, false)
+	if err == nil || !strings.Contains(err.Error(), "API keys are not stored") {
+		t.Fatalf("expected actionable API-key rerun error, got %v", err)
+	}
+}
+
+func containsFlagValue(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func slicesContain(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }

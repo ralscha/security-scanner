@@ -13,6 +13,7 @@ func TestStoreAddListAndGet(t *testing.T) {
 	result := &scan.Result{OutDir: filepath.Join(t.TempDir(), "scan"), Manifest: scan.ScanManifest{
 		ScanID: "scan-1", Target: filepath.Join(t.TempDir(), "repo"), Status: "completed",
 		Provider: "test", Model: "model", StartedAt: time.Unix(10, 0), CompletedAt: time.Unix(20, 0),
+		LaunchConfig: &scan.LaunchConfiguration{AuthMode: "env", MaxIterations: 17, Excludes: []string{"vendor"}},
 	}}
 	if err := store.Add(result); err != nil {
 		t.Fatal(err)
@@ -27,6 +28,9 @@ func TestStoreAddListAndGet(t *testing.T) {
 	record, err := store.Get("scan-1")
 	if err != nil || record.OutputDir != result.OutDir {
 		t.Fatalf("record = %#v, err = %v", record, err)
+	}
+	if record.LaunchConfig == nil || record.LaunchConfig.AuthMode != "env" || record.LaunchConfig.MaxIterations != 17 {
+		t.Fatalf("launch configuration was not persisted: %#v", record.LaunchConfig)
 	}
 }
 

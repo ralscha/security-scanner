@@ -76,6 +76,10 @@ func DefaultRegistry() *Registry {
 		DefaultBaseURL: "https://openrouter.ai/api/v1", RequiresAPIKey: true,
 	}, buildOpenRouter)
 	mustRegister(registry, ProviderInfo{
+		Name: "fireworks", APIKeyEnv: "FIREWORKS_API_KEY", ModelEnv: "FIREWORKS_MODEL", BaseURLEnv: "FIREWORKS_BASE_URL",
+		DefaultBaseURL: "https://api.fireworks.ai/inference/v1", RequiresAPIKey: true,
+	}, buildOpenAI)
+	mustRegister(registry, ProviderInfo{
 		Name: "anthropic", Aliases: []string{"claude"}, APIKeyEnv: "ANTHROPIC_API_KEY", ModelEnv: "ANTHROPIC_MODEL", BaseURLEnv: "ANTHROPIC_BASE_URL",
 		RequiresAPIKey: true,
 	}, buildClaude)

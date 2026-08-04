@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -110,6 +111,7 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 	maxDuration := flags.Duration("max-duration", 45*time.Minute, "overall scan timeout")
 	requestTimeout := flags.Duration("request-timeout", 10*time.Minute, "timeout per model request")
 	quiet := flags.Bool("quiet", false, "suppress progress messages")
+	verbose := flags.Bool("verbose", false, "print redacted scan diagnostics to stderr")
 	flags.Var(&excludes, "exclude", "repository-relative directory to exclude; repeatable")
 	flags.Var(&paths, "path", "repository-relative file or directory to scan; repeatable")
 	flags.Usage = func() {
@@ -123,12 +125,24 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		stderr.Println("scan does not accept positional arguments; use --target")
 		return 2
 	}
+	diagnostic := newDiagnosticLogger(*verbose, stderr)
+	diagnostic.Log("scan.configuration", map[string]any{
+		"version":               version,
+		"dry_run":               *dryRun,
+		"max_file_bytes":        *maxFileBytes,
+		"max_iterations":        *maxIterations,
+		"max_agent_concurrency": *maxAgentConcurrency,
+		"max_duration":          maxDuration.String(),
+		"request_timeout":       requestTimeout.String(),
+	})
 	if *maxAgentConcurrency <= 0 {
+		diagnostic.Log("scan.failed", map[string]any{"classification": "configuration"})
 		stderr.Println("scan failed: --max-agent-concurrency must be positive")
 		return 2
 	}
 	threshold, err := policy.ParseSeverity(*failOnSeverity)
 	if err != nil {
+		diagnostic.Log("scan.failed", map[string]any{"classification": "configuration"})
 		stderr.Printf("scan failed: %v\n", err)
 		return 2
 	}
@@ -140,14 +154,25 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		defer cancel()
 	}
 	var progress func(string)
-	if !*quiet {
-		progress = func(message string) { stderr.Printf("[scan] %s\n", message) }
+	if !*quiet || diagnostic.Enabled() {
+		progress = func(message string) {
+			diagnostic.Log("scan.progress", map[string]any{"message": message})
+			if !*quiet {
+				stderr.Printf("[scan] %s\n", message)
+			}
+		}
 	}
 	resolution, err := targeting.Resolve(ctx, *target, targeting.Selector{Paths: paths, DiffRef: *diffRef, WorkingTree: *workingTree})
 	if err != nil {
+		diagnostic.Log("scan.failed", map[string]any{"classification": "target"})
 		stderr.Printf("scan failed: %v\n", err)
 		return 2
 	}
+	diagnostic.Log("scan.target_resolved", map[string]any{
+		"mode":       resolution.Mode,
+		"path_count": len(resolution.Paths),
+		"reference":  resolution.Ref,
+	})
 	options := app.Options{
 		Target:              *target,
 		OutputDir:           *outDir,
@@ -168,11 +193,14 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		MaxIterations:       *maxIterations,
 		MaxAgentConcurrency: *maxAgentConcurrency,
 		RequestTimeout:      *requestTimeout,
+		MaxDuration:         *maxDuration,
+		FailOnSeverity:      *failOnSeverity,
 		Progress:            progress,
 	}
 	if *dryRun {
 		prepared, err := app.Prepare(options, time.Now().UTC())
 		if err != nil {
+			diagnostic.Log("scan.failed", map[string]any{"classification": "preflight"})
 			stderr.Printf("scan failed: %v\n", err)
 			return 2
 		}
@@ -185,13 +213,26 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
 		if err := encoder.Encode(payload); err != nil {
+			diagnostic.Log("scan.failed", map[string]any{"classification": "output"})
 			stderr.Printf("write dry-run result: %v\n", err)
 			return 2
 		}
+		diagnostic.Log("scan.preflight.completed", map[string]any{
+			"provider": prepared.Provider,
+			"model":    prepared.ModelName,
+			"files":    len(prepared.Inventory.Files),
+		})
 		return 0
 	}
 	result, err := app.Run(ctx, options)
 	if err != nil {
+		classification := "runtime"
+		if errors.Is(err, context.Canceled) {
+			classification = "interrupted"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			classification = "deadline"
+		}
+		diagnostic.Log("scan.failed", map[string]any{"classification": classification})
 		if errors.Is(err, context.Canceled) {
 			stderr.Printf("scan interrupted: %v\n", err)
 			return interruptionCode()
@@ -210,11 +251,24 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 	stdout.Printf("Coverage: %d/%d reviewed (%d skipped, %d unreviewed)\n",
 		result.Coverage.Summary.Reviewed, result.Coverage.Summary.Total,
 		result.Coverage.Summary.Skipped, result.Coverage.Summary.Unreviewed)
+	evaluation := policy.Evaluate(result.Findings.Findings, threshold)
+	exitCode := 0
+	if result.Coverage.Summary.Unreviewed > 0 {
+		exitCode = 2
+	} else if evaluation.Violated {
+		exitCode = 1
+	}
+	diagnostic.Log("scan.completed", map[string]any{
+		"scan_id":    result.Manifest.ScanID,
+		"status":     result.Manifest.Status,
+		"findings":   result.Manifest.FindingCount,
+		"unreviewed": result.Coverage.Summary.Unreviewed,
+		"exit_code":  exitCode,
+	})
 	if result.Coverage.Summary.Unreviewed > 0 {
 		stderr.Println("scan completed with incomplete coverage")
 		return 2
 	}
-	evaluation := policy.Evaluate(result.Findings.Findings, threshold)
 	if evaluation.Violated {
 		stderr.Printf("scan policy violated: %d finding(s) at or above %s\n", len(evaluation.Matches), threshold)
 		return 1
@@ -350,25 +404,21 @@ func runScans(args []string, stdout, stderr *checkedWriter) int {
 		}
 		return writeJSON(result, stdout, stderr)
 	case "rerun":
-		if len(args) != 2 {
-			stderr.Println("Usage: security-scanner scans rerun SCAN_ID")
+		scanID, verbose, err := parseRerunArgs(args[1:])
+		if err != nil {
+			stderr.Printf("scans rerun failed: %v\n", err)
+			stderr.Println("Usage: security-scanner scans rerun SCAN_ID [--verbose]")
 			return 2
 		}
-		record, err := store.Get(args[1])
+		record, err := store.Get(scanID)
 		if err != nil {
 			stderr.Printf("scans rerun failed: %v\n", err)
 			return 2
 		}
-		scanArgs := []string{"--target", record.Target, "--provider", record.Provider, "--model", record.Model}
-		switch record.TargetMode {
-		case "path":
-			for _, path := range record.TargetPaths {
-				scanArgs = append(scanArgs, "--path", path)
-			}
-		case "diff":
-			scanArgs = append(scanArgs, "--diff", record.TargetRef)
-		case "working_tree":
-			scanArgs = append(scanArgs, "--working-tree")
+		scanArgs, err := rerunScanArgs(record, verbose)
+		if err != nil {
+			stderr.Printf("scans rerun failed: %v\n", err)
+			return 2
 		}
 		return runScan(scanArgs, stdout, stderr)
 	case "match", "compare":
@@ -834,6 +884,165 @@ func loadHistoryResult(store *history.Store, scanID string) (*scan.Result, error
 		return nil, err
 	}
 	return history.LoadResult(record)
+}
+
+func parseRerunArgs(args []string) (string, bool, error) {
+	var scanID string
+	verbose := false
+	for _, arg := range args {
+		switch {
+		case arg == "--verbose":
+			verbose = true
+		case strings.HasPrefix(arg, "--verbose="):
+			value, err := strconv.ParseBool(strings.TrimPrefix(arg, "--verbose="))
+			if err != nil {
+				return "", false, fmt.Errorf("--verbose expects true or false")
+			}
+			verbose = value
+		case strings.HasPrefix(arg, "-"):
+			return "", false, fmt.Errorf("unknown option %q", arg)
+		case scanID != "":
+			return "", false, fmt.Errorf("expected exactly one scan ID")
+		default:
+			scanID = strings.TrimSpace(arg)
+		}
+	}
+	if scanID == "" {
+		return "", false, fmt.Errorf("scan ID is required")
+	}
+	return scanID, verbose, nil
+}
+
+func rerunScanArgs(record history.Record, verbose bool) ([]string, error) {
+	if strings.TrimSpace(record.Target) == "" || strings.TrimSpace(record.Provider) == "" || strings.TrimSpace(record.Model) == "" {
+		return nil, fmt.Errorf("saved scan is missing its target, provider, or model")
+	}
+	args := []string{"--target", record.Target, "--provider", record.Provider, "--model", record.Model}
+	if config := record.LaunchConfig; config != nil {
+		if config.RequiresExplicitAPIKey {
+			return nil, fmt.Errorf("saved scan used an explicit API key; API keys are not stored, so rerun the original command with --api-key")
+		}
+		authMode := strings.TrimSpace(config.AuthMode)
+		switch authMode {
+		case "", "auto", "env", "none":
+			if authMode != "" {
+				args = append(args, "--auth", authMode)
+			}
+		case "api-key":
+			return nil, fmt.Errorf("saved scan used --auth api-key; API keys are not stored, so rerun the original command with --api-key")
+		default:
+			return nil, fmt.Errorf("saved scan has invalid authentication mode %q", authMode)
+		}
+		if config.BaseURL != "" {
+			args = append(args, "--base-url", config.BaseURL)
+		}
+		if config.APIVersion != "" {
+			args = append(args, "--api-version", config.APIVersion)
+		}
+		if config.MaxOutputTokens < 0 || config.MaxFileBytes < 0 || config.MaxIterations < 0 || config.MaxAgentConcurrency < 0 {
+			return nil, fmt.Errorf("saved scan contains invalid negative runtime settings")
+		}
+		if config.MaxOutputTokens > 0 {
+			args = append(args, "--max-output-tokens", strconv.Itoa(config.MaxOutputTokens))
+		}
+		if config.MaxFileBytes > 0 {
+			args = append(args, "--max-file-bytes", strconv.FormatInt(config.MaxFileBytes, 10))
+		}
+		if config.MaxIterations > 0 {
+			args = append(args, "--max-iterations", strconv.Itoa(config.MaxIterations))
+		}
+		if config.MaxAgentConcurrency > 0 {
+			args = append(args, "--max-agent-concurrency", strconv.Itoa(config.MaxAgentConcurrency))
+		}
+		for _, setting := range []struct {
+			flag  string
+			value string
+		}{
+			{flag: "--request-timeout", value: config.RequestTimeout},
+			{flag: "--max-duration", value: config.MaxDuration},
+		} {
+			if setting.value == "" {
+				continue
+			}
+			duration, err := time.ParseDuration(setting.value)
+			if err != nil || duration <= 0 {
+				return nil, fmt.Errorf("saved scan has invalid %s value", setting.flag)
+			}
+			args = append(args, setting.flag, setting.value)
+		}
+		if config.UserContext != "" {
+			args = append(args, "--context", config.UserContext)
+		}
+		for _, exclude := range config.Excludes {
+			if strings.TrimSpace(exclude) == "" {
+				return nil, fmt.Errorf("saved scan contains an empty exclusion")
+			}
+			args = append(args, "--exclude", exclude)
+		}
+		if severity := strings.TrimSpace(config.FailOnSeverity); severity != "" {
+			if _, err := policy.ParseSeverity(severity); err != nil {
+				return nil, fmt.Errorf("saved scan has invalid severity policy: %w", err)
+			}
+			args = append(args, "--fail-on-severity", severity)
+		}
+	}
+	switch record.TargetMode {
+	case "", "all":
+	case "path":
+		if len(record.TargetPaths) == 0 {
+			return nil, fmt.Errorf("saved path scan contains no target paths")
+		}
+		for _, path := range record.TargetPaths {
+			if strings.TrimSpace(path) == "" {
+				return nil, fmt.Errorf("saved path scan contains an empty target path")
+			}
+			args = append(args, "--path", path)
+		}
+	case "diff":
+		if strings.TrimSpace(record.TargetRef) == "" {
+			return nil, fmt.Errorf("saved diff scan contains no Git reference")
+		}
+		args = append(args, "--diff", record.TargetRef)
+	case "working_tree":
+		args = append(args, "--working-tree")
+	default:
+		return nil, fmt.Errorf("saved scan has invalid target mode %q", record.TargetMode)
+	}
+	if verbose {
+		args = append(args, "--verbose")
+	}
+	return args, nil
+}
+
+type diagnosticLogger struct {
+	enabled bool
+	output  *checkedWriter
+}
+
+func newDiagnosticLogger(requested bool, output *checkedWriter) diagnosticLogger {
+	level := strings.TrimSpace(os.Getenv("SECURITY_SCANNER_LOG_LEVEL"))
+	if level == "" {
+		level = strings.TrimSpace(os.Getenv("LOG_LEVEL"))
+	}
+	return diagnosticLogger{enabled: requested || strings.EqualFold(level, "debug"), output: output}
+}
+
+func (logger diagnosticLogger) Enabled() bool { return logger.enabled }
+
+func (logger diagnosticLogger) Log(event string, fields map[string]any) {
+	if !logger.enabled || logger.output == nil {
+		return
+	}
+	if len(fields) == 0 {
+		logger.output.Printf("security-scanner: debug: %s\n", event)
+		return
+	}
+	data, err := json.Marshal(fields)
+	if err != nil {
+		logger.output.Printf("security-scanner: debug: %s fields=unavailable\n", event)
+		return
+	}
+	logger.output.Printf("security-scanner: debug: %s %s\n", event, redact.Text(string(data)))
 }
 
 func writeJSON(value any, stdout, stderr *checkedWriter) int {

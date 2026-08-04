@@ -30,6 +30,7 @@ type FinalizeOptions struct {
 	PreparationDuration time.Duration
 	AnalysisDuration    time.Duration
 	OutputGuard         *output.Guard
+	LaunchConfig        *LaunchConfiguration
 }
 
 func Finalize(inv *Inventory, tracker CoverageTracker, submission Submission, opts FinalizeOptions) (*Result, error) {
@@ -83,6 +84,7 @@ func Finalize(inv *Inventory, tracker CoverageTracker, submission Submission, op
 			PreparationMS: opts.PreparationDuration.Milliseconds(),
 			AnalysisMS:    opts.AnalysisDuration.Milliseconds(),
 		},
+		LaunchConfig: cloneLaunchConfiguration(opts.LaunchConfig),
 	}
 	result := &Result{Manifest: manifest, Findings: findingsDoc, Coverage: coverage, OutDir: opts.OutputDir}
 	guard := opts.OutputGuard
@@ -97,6 +99,15 @@ func Finalize(inv *Inventory, tracker CoverageTracker, submission Submission, op
 		return nil, err
 	}
 	return result, nil
+}
+
+func cloneLaunchConfiguration(config *LaunchConfiguration) *LaunchConfiguration {
+	if config == nil {
+		return nil
+	}
+	clone := *config
+	clone.Excludes = append([]string(nil), config.Excludes...)
+	return &clone
 }
 
 func buildCoverage(inv *Inventory, tracker CoverageTracker) CoverageDocument {

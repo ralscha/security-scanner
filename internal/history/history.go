@@ -17,18 +17,19 @@ import (
 const schemaVersion = "1"
 
 type Record struct {
-	ScanID       string    `json:"scan_id"`
-	Target       string    `json:"target"`
-	OutputDir    string    `json:"output_dir"`
-	Status       string    `json:"status"`
-	Provider     string    `json:"provider"`
-	Model        string    `json:"model"`
-	StartedAt    time.Time `json:"started_at"`
-	CompletedAt  time.Time `json:"completed_at"`
-	FindingCount int       `json:"finding_count"`
-	TargetMode   string    `json:"target_mode,omitempty"`
-	TargetRef    string    `json:"target_ref,omitempty"`
-	TargetPaths  []string  `json:"target_paths,omitempty"`
+	ScanID       string                    `json:"scan_id"`
+	Target       string                    `json:"target"`
+	OutputDir    string                    `json:"output_dir"`
+	Status       string                    `json:"status"`
+	Provider     string                    `json:"provider"`
+	Model        string                    `json:"model"`
+	StartedAt    time.Time                 `json:"started_at"`
+	CompletedAt  time.Time                 `json:"completed_at"`
+	FindingCount int                       `json:"finding_count"`
+	TargetMode   string                    `json:"target_mode,omitempty"`
+	TargetRef    string                    `json:"target_ref,omitempty"`
+	TargetPaths  []string                  `json:"target_paths,omitempty"`
+	LaunchConfig *scan.LaunchConfiguration `json:"launch_configuration,omitempty"`
 }
 
 type Index struct {
@@ -68,6 +69,7 @@ func (s *Store) Add(result *scan.Result) error {
 		StartedAt: result.Manifest.StartedAt, CompletedAt: result.Manifest.CompletedAt,
 		FindingCount: result.Manifest.FindingCount, TargetMode: result.Manifest.TargetMode,
 		TargetRef: result.Manifest.TargetRef, TargetPaths: append([]string(nil), result.Manifest.TargetPaths...),
+		LaunchConfig: cloneLaunchConfiguration(result.Manifest.LaunchConfig),
 	}
 	replaced := false
 	for i := range index.Scans {
@@ -82,6 +84,15 @@ func (s *Store) Add(result *scan.Result) error {
 	}
 	sort.Slice(index.Scans, func(i, j int) bool { return index.Scans[i].StartedAt.After(index.Scans[j].StartedAt) })
 	return s.save(index)
+}
+
+func cloneLaunchConfiguration(config *scan.LaunchConfiguration) *scan.LaunchConfiguration {
+	if config == nil {
+		return nil
+	}
+	clone := *config
+	clone.Excludes = append([]string(nil), config.Excludes...)
+	return &clone
 }
 
 func (s *Store) List(target string) ([]Record, error) {

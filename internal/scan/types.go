@@ -101,24 +101,43 @@ type TimingBreakdown struct {
 	AnalysisMS    int64 `json:"analysis_ms"`
 }
 
+// LaunchConfiguration contains the inputs needed to faithfully rerun a scan.
+// API keys are intentionally never persisted.
+type LaunchConfiguration struct {
+	AuthMode               string   `json:"auth_mode,omitempty"`
+	RequiresExplicitAPIKey bool     `json:"requires_explicit_api_key,omitempty"`
+	BaseURL                string   `json:"base_url,omitempty"`
+	APIVersion             string   `json:"api_version,omitempty"`
+	MaxOutputTokens        int      `json:"max_output_tokens,omitempty"`
+	UserContext            string   `json:"user_context,omitempty"`
+	Excludes               []string `json:"excludes,omitempty"`
+	MaxFileBytes           int64    `json:"max_file_bytes,omitempty"`
+	MaxIterations          int      `json:"max_iterations,omitempty"`
+	MaxAgentConcurrency    int      `json:"max_agent_concurrency,omitempty"`
+	RequestTimeout         string   `json:"request_timeout,omitempty"`
+	MaxDuration            string   `json:"max_duration,omitempty"`
+	FailOnSeverity         string   `json:"fail_on_severity,omitempty"`
+}
+
 type ScanManifest struct {
-	SchemaVersion string            `json:"schema_version"`
-	ScanID        string            `json:"scan_id"`
-	Status        string            `json:"status"`
-	Target        string            `json:"target"`
-	Provider      string            `json:"provider"`
-	Model         string            `json:"model"`
-	TargetMode    string            `json:"target_mode,omitempty"`
-	TargetRef     string            `json:"target_ref,omitempty"`
-	TargetPaths   []string          `json:"target_paths,omitempty"`
-	StartedAt     time.Time         `json:"started_at"`
-	CompletedAt   time.Time         `json:"completed_at"`
-	Artifacts     map[string]string `json:"artifacts"`
-	FilesTotal    int               `json:"files_total"`
-	FilesReviewed int               `json:"files_reviewed"`
-	FindingCount  int               `json:"finding_count"`
-	DurationMS    int64             `json:"duration_ms"`
-	Timings       TimingBreakdown   `json:"timings"`
+	SchemaVersion string               `json:"schema_version"`
+	ScanID        string               `json:"scan_id"`
+	Status        string               `json:"status"`
+	Target        string               `json:"target"`
+	Provider      string               `json:"provider"`
+	Model         string               `json:"model"`
+	TargetMode    string               `json:"target_mode,omitempty"`
+	TargetRef     string               `json:"target_ref,omitempty"`
+	TargetPaths   []string             `json:"target_paths,omitempty"`
+	StartedAt     time.Time            `json:"started_at"`
+	CompletedAt   time.Time            `json:"completed_at"`
+	Artifacts     map[string]string    `json:"artifacts"`
+	FilesTotal    int                  `json:"files_total"`
+	FilesReviewed int                  `json:"files_reviewed"`
+	FindingCount  int                  `json:"finding_count"`
+	DurationMS    int64                `json:"duration_ms"`
+	Timings       TimingBreakdown      `json:"timings"`
+	LaunchConfig  *LaunchConfiguration `json:"launch_configuration,omitempty"`
 }
 
 type Result struct {

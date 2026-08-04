@@ -14,7 +14,7 @@ The scan workflow adapts the strongest ideas from Codex Security's repository sc
 
 The Eino DeepAgent is the coordinator. It has three named sub-agents (`discovery`, `validation`, and `attack-path`) plus task tracking. Agents receive only read-only repository capabilities: `list_files`, `read_file`, and `search_code` (`search_file` is a provider-compatibility alias). They have no shell and cannot write to the target.
 
-Provider construction is isolated in a registry. The scanner includes official Eino adapters for OpenAI, Azure OpenAI, OpenRouter, Anthropic Claude, Google Gemini, Ollama, and Volcengine Ark. The `openai-compatible` provider also covers servers and vendors that expose a compatible chat-completions and tool-calling API, including self-hosted gateways.
+Provider construction is isolated in a registry. The scanner includes Eino adapters for OpenAI, Azure OpenAI, OpenRouter, Fireworks AI, Anthropic Claude, Google Gemini, Ollama, and Volcengine Ark. The `openai-compatible` provider also covers servers and vendors that expose a compatible chat-completions and tool-calling API, including self-hosted gateways.
 
 Go code owns the security boundary and final output:
 
@@ -95,6 +95,16 @@ export OPENROUTER_API_KEY="..."
 ./security-scanner scan --provider openrouter --model "PROVIDER/MODEL" --target /path/to/repo
 ```
 
+Fireworks AI:
+
+```bash
+export FIREWORKS_API_KEY="..."
+./security-scanner scan \
+  --provider fireworks \
+  --model "accounts/fireworks/models/YOUR_MODEL" \
+  --target /path/to/repo
+```
+
 Any OpenAI-compatible endpoint:
 
 ```bash
@@ -138,7 +148,11 @@ Useful controls:
 --max-duration DURATION Overall deadline, such as 30m
 --request-timeout D     Timeout for one model request
 --quiet                 Suppress progress events
+--verbose               Print redacted lifecycle diagnostics to stderr
 ```
+
+`SECURITY_SCANNER_LOG_LEVEL=debug` also enables verbose diagnostics;
+`LOG_LEVEL=debug` is used as a fallback. Scan results remain on stdout.
 
 Target a subset of a repository with exactly one selector mode:
 
@@ -201,6 +215,12 @@ Completed scans are indexed in the per-user scanner state directory:
 ./security-scanner scans compare BEFORE_SCAN_ID AFTER_SCAN_ID
 ./security-scanner scans compare --json BEFORE_SCAN_ID AFTER_SCAN_ID
 ```
+
+New scans save their launch configuration, excluding API keys, so reruns retain
+authentication mode, provider endpoint, target scope, exclusions, threat-model
+context, policy, and runtime limits. Add `--verbose` to a rerun for diagnostics.
+If the original command supplied `--api-key`, rerun it manually with the key;
+the scanner never writes that credential to its manifest or history index.
 
 Finding occurrences use `SCAN_ID:FINDING_ID`. Analyst decisions are stored separately from canonical scan artifacts:
 

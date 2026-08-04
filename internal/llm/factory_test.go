@@ -53,6 +53,21 @@ func TestResolveProviderRequirements(t *testing.T) {
 	}
 }
 
+func TestResolveFireworksEnvironment(t *testing.T) {
+	t.Setenv("FIREWORKS_API_KEY", "fireworks-key")
+	t.Setenv("FIREWORKS_MODEL", "accounts/fireworks/models/test")
+	t.Setenv("SECURITY_SCANNER_API_KEY", "")
+	t.Setenv("SECURITY_SCANNER_MODEL", "")
+	t.Setenv("SECURITY_SCANNER_BASE_URL", "")
+	resolved, err := DefaultRegistry().Resolve(Config{Provider: "fireworks"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.APIKey != "fireworks-key" || resolved.Model != "accounts/fireworks/models/test" || resolved.BaseURL != "https://api.fireworks.ai/inference/v1" {
+		t.Fatalf("unexpected Fireworks configuration: %#v", resolved)
+	}
+}
+
 func TestDefaultProviderBuilders(t *testing.T) {
 	t.Setenv("SECURITY_SCANNER_API_KEY", "")
 	t.Setenv("SECURITY_SCANNER_MODEL", "")
@@ -62,6 +77,7 @@ func TestDefaultProviderBuilders(t *testing.T) {
 		{Provider: "openai-compatible", BaseURL: "http://localhost:8080/v1", Model: "test"},
 		{Provider: "azure-openai", APIKey: "test", BaseURL: "https://example.test", APIVersion: "2025-01-01", Model: "test"},
 		{Provider: "openrouter", APIKey: "test", Model: "test"},
+		{Provider: "fireworks", APIKey: "test", Model: "test"},
 		{Provider: "anthropic", APIKey: "test", Model: "test"},
 		{Provider: "gemini", APIKey: "test", Model: "test"},
 		{Provider: "ollama", Model: "test"},

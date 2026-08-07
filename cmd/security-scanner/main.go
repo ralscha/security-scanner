@@ -1197,7 +1197,8 @@ func newScanProgressEstimator() *scanProgressEstimator {
 
 func (e *scanProgressEstimator) observe(message string) (string, int) {
 	msg := strings.TrimSpace(message)
-	phase, percent := "preparation", 5
+	var phase string
+	var percent int
 	switch {
 	case strings.HasPrefix(msg, "archived existing output to "):
 		phase, percent = "preparation", 10

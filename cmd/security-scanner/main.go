@@ -15,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"security-scanner/internal/agent"
 	"security-scanner/internal/app"
@@ -105,12 +106,18 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 	authMode := flags.String("auth", "auto", "authentication mode: auto, env, api-key, or none")
 	maxOutputTokens := flags.Int("max-output-tokens", 0, "provider output-token limit; 0 uses provider default")
 	userContext := flags.String("context", "", "additional threat-model context, treated as untrusted data")
+	scanPrompt := flags.String("scan-prompt", "", "custom coordinator prompt extension")
+	scanPromptFile := flags.String("scan-prompt-file", "", "read custom coordinator prompt extension from file")
+	followUpPrompt := flags.String("follow-up-prompt", "", "custom specialist follow-up prompt extension")
+	followUpPromptFile := flags.String("follow-up-prompt-file", "", "read custom specialist follow-up prompt extension from file")
 	maxFileBytes := flags.Int64("max-file-bytes", 1024*1024, "maximum reviewable file size")
 	maxIterations := flags.Int("max-iterations", 80, "maximum reasoning iterations per agent")
 	maxAgentConcurrency := flags.Int("max-agent-concurrency", 4, "maximum concurrent model requests across agents")
 	maxDuration := flags.Duration("max-duration", 45*time.Minute, "overall scan timeout")
 	requestTimeout := flags.Duration("request-timeout", 10*time.Minute, "timeout per model request")
 	quiet := flags.Bool("quiet", false, "suppress progress messages")
+	jsonProgress := flags.Bool("json-progress", false, "write JSON progress events to stderr")
+	jsonProgressStrict := flags.Bool("json-progress-strict", false, "with --json-progress, emit only JSON progress events on stderr")
 	verbose := flags.Bool("verbose", false, "print redacted scan diagnostics to stderr")
 	flags.Var(&excludes, "exclude", "repository-relative directory to exclude; repeatable")
 	flags.Var(&paths, "path", "repository-relative file or directory to scan; repeatable")
@@ -125,7 +132,35 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		stderr.Println("scan does not accept positional arguments; use --target")
 		return 2
 	}
-	diagnostic := newDiagnosticLogger(*verbose, stderr)
+	resolvedScanPrompt, err := resolvePromptOverride(*scanPrompt, *scanPromptFile, "scan")
+	if err != nil {
+		stderr.Printf("scan failed: %v\n", err)
+		return 2
+	}
+	resolvedFollowUpPrompt, err := resolvePromptOverride(*followUpPrompt, *followUpPromptFile, "follow-up")
+	if err != nil {
+		stderr.Printf("scan failed: %v\n", err)
+		return 2
+	}
+	if *jsonProgressStrict && !*jsonProgress {
+		stderr.Println("scan failed: --json-progress-strict requires --json-progress")
+		return 2
+	}
+	emitLine := func(message string) {
+		if !*jsonProgressStrict {
+			stderr.Println(message)
+		}
+	}
+	emitf := func(format string, args ...any) {
+		if !*jsonProgressStrict {
+			stderr.Printf(format, args...)
+		}
+	}
+	diagnosticOutput := stderr
+	if *jsonProgressStrict {
+		diagnosticOutput = nil
+	}
+	diagnostic := newDiagnosticLogger(*verbose, diagnosticOutput)
 	diagnostic.Log("scan.configuration", map[string]any{
 		"version":               version,
 		"dry_run":               *dryRun,
@@ -135,15 +170,46 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		"max_duration":          maxDuration.String(),
 		"request_timeout":       requestTimeout.String(),
 	})
+	estimator := newScanProgressEstimator()
+	emitJSONProgress := func(message, phase string, percent int, status string) {
+		if !*jsonProgress {
+			return
+		}
+		data, err := json.Marshal(struct {
+			Event     string `json:"event"`
+			Timestamp string `json:"timestamp"`
+			Message   string `json:"message"`
+			Phase     string `json:"phase,omitempty"`
+			Percent   int    `json:"percent,omitempty"`
+			Status    string `json:"status,omitempty"`
+		}{
+			Event:     "scan.progress",
+			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			Message:   message,
+			Phase:     phase,
+			Percent:   percent,
+			Status:    status,
+		})
+		if err != nil {
+			emitf("[scan] encode progress: %v\n", err)
+			return
+		}
+		stderr.Println(string(data))
+	}
+	emitTerminalProgress := func(message, status string) {
+		emitJSONProgress(message, "completed", 100, status)
+	}
 	if *maxAgentConcurrency <= 0 {
 		diagnostic.Log("scan.failed", map[string]any{"classification": "configuration"})
-		stderr.Println("scan failed: --max-agent-concurrency must be positive")
+		emitTerminalProgress("scan failed", "failed")
+		emitLine("scan failed: --max-agent-concurrency must be positive")
 		return 2
 	}
 	threshold, err := policy.ParseSeverity(*failOnSeverity)
 	if err != nil {
 		diagnostic.Log("scan.failed", map[string]any{"classification": "configuration"})
-		stderr.Printf("scan failed: %v\n", err)
+		emitTerminalProgress("scan failed", "failed")
+		emitf("scan failed: %v\n", err)
 		return 2
 	}
 	ctx, stop, interruptionCode := newSignalContext(context.Background())
@@ -154,10 +220,13 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		defer cancel()
 	}
 	var progress func(string)
-	if !*quiet || diagnostic.Enabled() {
+	if !*quiet || *jsonProgress || diagnostic.Enabled() {
 		progress = func(message string) {
 			diagnostic.Log("scan.progress", map[string]any{"message": message})
-			if !*quiet {
+			if *jsonProgress {
+				phase, percent := estimator.observe(message)
+				emitJSONProgress(message, phase, percent, "in_progress")
+			} else if !*quiet {
 				stderr.Printf("[scan] %s\n", message)
 			}
 		}
@@ -165,7 +234,8 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 	resolution, err := targeting.Resolve(ctx, *target, targeting.Selector{Paths: paths, DiffRef: *diffRef, WorkingTree: *workingTree})
 	if err != nil {
 		diagnostic.Log("scan.failed", map[string]any{"classification": "target"})
-		stderr.Printf("scan failed: %v\n", err)
+		emitTerminalProgress("scan failed", "failed")
+		emitf("scan failed: %v\n", err)
 		return 2
 	}
 	diagnostic.Log("scan.target_resolved", map[string]any{
@@ -195,13 +265,16 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		RequestTimeout:      *requestTimeout,
 		MaxDuration:         *maxDuration,
 		FailOnSeverity:      *failOnSeverity,
+		ScanPrompt:          resolvedScanPrompt,
+		FollowUpPrompt:      resolvedFollowUpPrompt,
 		Progress:            progress,
 	}
 	if *dryRun {
 		prepared, err := app.Prepare(options, time.Now().UTC())
 		if err != nil {
 			diagnostic.Log("scan.failed", map[string]any{"classification": "preflight"})
-			stderr.Printf("scan failed: %v\n", err)
+			emitTerminalProgress("scan failed", "failed")
+			emitf("scan failed: %v\n", err)
 			return 2
 		}
 		payload := struct {
@@ -214,7 +287,8 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		encoder.SetIndent("", "  ")
 		if err := encoder.Encode(payload); err != nil {
 			diagnostic.Log("scan.failed", map[string]any{"classification": "output"})
-			stderr.Printf("write dry-run result: %v\n", err)
+			emitTerminalProgress("scan failed", "failed")
+			emitf("write dry-run result: %v\n", err)
 			return 2
 		}
 		diagnostic.Log("scan.preflight.completed", map[string]any{
@@ -222,6 +296,7 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 			"model":    prepared.ModelName,
 			"files":    len(prepared.Inventory.Files),
 		})
+		emitTerminalProgress("scan dry-run completed", "completed")
 		return 0
 	}
 	result, err := app.Run(ctx, options)
@@ -234,12 +309,15 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		}
 		diagnostic.Log("scan.failed", map[string]any{"classification": classification})
 		if errors.Is(err, context.Canceled) {
-			stderr.Printf("scan interrupted: %v\n", err)
+			emitTerminalProgress("scan interrupted", "interrupted")
+			emitf("scan interrupted: %v\n", err)
 			return interruptionCode()
 		} else if errors.Is(err, context.DeadlineExceeded) {
-			stderr.Printf("scan failed: %v\n", err)
+			emitTerminalProgress("scan failed", "failed")
+			emitf("scan failed: %v\n", err)
 		} else {
-			stderr.Printf("scan failed: %v\n", err)
+			emitTerminalProgress("scan failed", "failed")
+			emitf("scan failed: %v\n", err)
 		}
 		return 2
 	}
@@ -266,13 +344,16 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		"exit_code":  exitCode,
 	})
 	if result.Coverage.Summary.Unreviewed > 0 {
-		stderr.Println("scan completed with incomplete coverage")
+		emitTerminalProgress("scan completed with incomplete coverage", "failed")
+		emitLine("scan completed with incomplete coverage")
 		return 2
 	}
 	if evaluation.Violated {
-		stderr.Printf("scan policy violated: %d finding(s) at or above %s\n", len(evaluation.Matches), threshold)
+		emitTerminalProgress("scan policy violated", "failed")
+		emitf("scan policy violated: %d finding(s) at or above %s\n", len(evaluation.Matches), threshold)
 		return 1
 	}
+	emitTerminalProgress("scan completed", "completed")
 	return 0
 }
 
@@ -294,9 +375,23 @@ func runPreflight(args []string, stdout, stderr *checkedWriter) int {
 	archiveExisting := flags.Bool("archive-existing", false, "allow archival of existing output during the real scan")
 	maxFileBytes := flags.Int64("max-file-bytes", 1024*1024, "maximum reviewable file size")
 	asJSON := flags.Bool("json", false, "write machine-readable JSON")
+	scanPrompt := flags.String("scan-prompt", "", "custom coordinator prompt extension")
+	scanPromptFile := flags.String("scan-prompt-file", "", "read custom coordinator prompt extension from file")
+	followUpPrompt := flags.String("follow-up-prompt", "", "custom specialist follow-up prompt extension")
+	followUpPromptFile := flags.String("follow-up-prompt-file", "", "read custom specialist follow-up prompt extension from file")
 	flags.Var(&excludes, "exclude", "repository-relative exclusion; repeatable")
 	flags.Var(&paths, "path", "repository-relative file or directory; repeatable")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		return 2
+	}
+	resolvedScanPrompt, err := resolvePromptOverride(*scanPrompt, *scanPromptFile, "scan")
+	if err != nil {
+		stderr.Printf("scan failed: %v\n", err)
+		return 2
+	}
+	resolvedFollowUpPrompt, err := resolvePromptOverride(*followUpPrompt, *followUpPromptFile, "follow-up")
+	if err != nil {
+		stderr.Printf("scan failed: %v\n", err)
 		return 2
 	}
 	ctx := context.Background()
@@ -315,6 +410,7 @@ func runPreflight(args []string, stdout, stderr *checkedWriter) int {
 		BaseURL: *baseURL, APIVersion: *apiVersion, AuthMode: *authMode, Excludes: excludes,
 		Includes: resolution.Paths, TargetMode: resolution.Mode, TargetRef: resolution.Ref,
 		ArchiveExisting: *archiveExisting, MaxFileBytes: *maxFileBytes,
+		ScanPrompt: resolvedScanPrompt, FollowUpPrompt: resolvedFollowUpPrompt,
 	})
 	if *asJSON {
 		_ = writeJSON(result, stdout, stderr)
@@ -913,6 +1009,45 @@ func parseRerunArgs(args []string) (string, bool, error) {
 	return scanID, verbose, nil
 }
 
+func resolvePromptOverride(inlineValue, filePath, promptKind string) (string, error) {
+	inline := strings.TrimSpace(inlineValue)
+	path := strings.TrimSpace(filePath)
+	if inline != "" && path != "" {
+		return "", fmt.Errorf("use either --%s-prompt or --%s-prompt-file", promptKind, promptKind)
+	}
+	if path == "" {
+		if err := validatePromptOverride(inline, promptKind); err != nil {
+			return "", err
+		}
+		return inline, nil
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read --%s-prompt-file: %w", promptKind, err)
+	}
+	resolved := strings.TrimSpace(string(content))
+	if resolved == "" {
+		return "", fmt.Errorf("--%s-prompt-file is empty", promptKind)
+	}
+	if err := validatePromptOverride(resolved, promptKind); err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
+func validatePromptOverride(value, promptKind string) error {
+	if value == "" {
+		return nil
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("--%s-prompt must be valid UTF-8 text", promptKind)
+	}
+	if strings.ContainsRune(value, '\x00') {
+		return fmt.Errorf("--%s-prompt cannot contain NUL characters", promptKind)
+	}
+	return nil
+}
+
 func rerunScanArgs(record history.Record, verbose bool) ([]string, error) {
 	if strings.TrimSpace(record.Target) == "" || strings.TrimSpace(record.Provider) == "" || strings.TrimSpace(record.Model) == "" {
 		return nil, fmt.Errorf("saved scan is missing its target, provider, or model")
@@ -972,6 +1107,12 @@ func rerunScanArgs(record history.Record, verbose bool) ([]string, error) {
 		}
 		if config.UserContext != "" {
 			args = append(args, "--context", config.UserContext)
+		}
+		if config.ScanPrompt != "" {
+			args = append(args, "--scan-prompt", config.ScanPrompt)
+		}
+		if config.FollowUpPrompt != "" {
+			args = append(args, "--follow-up-prompt", config.FollowUpPrompt)
 		}
 		for _, exclude := range config.Excludes {
 			if strings.TrimSpace(exclude) == "" {
@@ -1043,6 +1184,56 @@ func (logger diagnosticLogger) Log(event string, fields map[string]any) {
 		return
 	}
 	logger.output.Printf("security-scanner: debug: %s %s\n", event, redact.Text(string(data)))
+}
+
+type scanProgressEstimator struct {
+	lastPercent  int
+	analysisSeen bool
+}
+
+func newScanProgressEstimator() *scanProgressEstimator {
+	return &scanProgressEstimator{}
+}
+
+func (e *scanProgressEstimator) observe(message string) (string, int) {
+	msg := strings.TrimSpace(message)
+	phase, percent := "preparation", 5
+	switch {
+	case strings.HasPrefix(msg, "archived existing output to "):
+		phase, percent = "preparation", 10
+	case strings.HasPrefix(msg, "building fixed file inventory"):
+		phase, percent = "preparation", 20
+	case strings.HasPrefix(msg, "inventory contains "):
+		if e.analysisSeen {
+			phase, percent = "analysis", 50
+		} else {
+			phase, percent = "preparation", 35
+		}
+	case strings.HasPrefix(msg, "using ") && strings.Contains(msg, " model "):
+		e.analysisSeen = true
+		phase, percent = "analysis", 45
+	case strings.HasPrefix(msg, "agent active:"):
+		e.analysisSeen = true
+		phase, percent = "analysis", max(e.lastPercent+10, 55)
+		if percent > 85 {
+			percent = 85
+		}
+	case strings.HasPrefix(msg, "validating and writing scan artifacts"):
+		phase, percent = "finalization", 92
+	default:
+		if e.analysisSeen {
+			phase = "analysis"
+			percent = max(e.lastPercent, 55)
+		} else {
+			phase = "preparation"
+			percent = max(e.lastPercent, 5)
+		}
+	}
+	if percent < e.lastPercent {
+		percent = e.lastPercent
+	}
+	e.lastPercent = percent
+	return phase, percent
 }
 
 func writeJSON(value any, stdout, stderr *checkedWriter) int {

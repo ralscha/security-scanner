@@ -37,6 +37,8 @@ type Options struct {
 	RequestTimeout      time.Duration
 	MaxDuration         time.Duration
 	FailOnSeverity      string
+	ScanPrompt          string
+	FollowUpPrompt      string
 	Progress            func(string)
 }
 
@@ -91,8 +93,10 @@ func Run(ctx context.Context, opts Options) (*scan.Result, error) {
 	preparationDuration := time.Since(started)
 	tracker := agent.NewReadTracker()
 	analyzer := agent.NewEinoAnalyzer(chatModel, agent.Config{
-		MaxIterations: opts.MaxIterations,
-		Progress:      opts.Progress,
+		MaxIterations:  opts.MaxIterations,
+		Progress:       opts.Progress,
+		ScanPrompt:     opts.ScanPrompt,
+		FollowUpPrompt: opts.FollowUpPrompt,
 	}, prepared.Inventory, tracker)
 	analysisStarted := time.Now()
 	submission, err := analyzer.Analyze(ctx, opts.UserContext)
@@ -120,6 +124,8 @@ func Run(ctx context.Context, opts Options) (*scan.Result, error) {
 			APIVersion:             resolvedModel.APIVersion,
 			MaxOutputTokens:        resolvedModel.MaxOutputTokens,
 			UserContext:            opts.UserContext,
+			ScanPrompt:             opts.ScanPrompt,
+			FollowUpPrompt:         opts.FollowUpPrompt,
 			Excludes:               append([]string(nil), opts.Excludes...),
 			MaxFileBytes:           opts.MaxFileBytes,
 			MaxIterations:          opts.MaxIterations,

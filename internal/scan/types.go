@@ -110,6 +110,8 @@ type LaunchConfiguration struct {
 	APIVersion             string   `json:"api_version,omitempty"`
 	MaxOutputTokens        int      `json:"max_output_tokens,omitempty"`
 	UserContext            string   `json:"user_context,omitempty"`
+	ScanPrompt             string   `json:"scan_prompt,omitempty"`
+	FollowUpPrompt         string   `json:"follow_up_prompt,omitempty"`
 	Excludes               []string `json:"excludes,omitempty"`
 	MaxFileBytes           int64    `json:"max_file_bytes,omitempty"`
 	MaxIterations          int      `json:"max_iterations,omitempty"`

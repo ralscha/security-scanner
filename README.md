@@ -147,7 +147,13 @@ Useful controls:
 --max-output-tokens N   Provider response limit; 0 uses its default
 --max-duration DURATION Overall deadline, such as 30m
 --request-timeout D     Timeout for one model request
+--scan-prompt TEXT      Custom coordinator prompt extension
+--scan-prompt-file P    Read custom coordinator prompt extension from file
+--follow-up-prompt TEXT Custom specialist follow-up prompt extension
+--follow-up-prompt-file P Read custom specialist follow-up prompt extension from file
 --quiet                 Suppress progress events
+--json-progress         Emit JSON progress events on stderr
+--json-progress-strict  With --json-progress, emit only JSON events on stderr
 --verbose               Print redacted lifecycle diagnostics to stderr
 ```
 

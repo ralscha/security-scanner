@@ -15,8 +15,10 @@ import (
 )
 
 type Config struct {
-	MaxIterations int
-	Progress      func(string)
+	MaxIterations  int
+	Progress       func(string)
+	ScanPrompt     string
+	FollowUpPrompt string
 }
 
 type EinoAnalyzer struct {
@@ -48,7 +50,7 @@ func (a *EinoAnalyzer) Analyze(ctx context.Context, userContext string) (scan.Su
 		return scan.Submission{}, fmt.Errorf("create submit tool: %w", err)
 	}
 
-	specialists, err := createSpecialists(ctx, a.chatModel, repositoryTools, a.config.MaxIterations)
+	specialists, err := createSpecialists(ctx, a.chatModel, repositoryTools, a.config.MaxIterations, a.config.FollowUpPrompt)
 	if err != nil {
 		return scan.Submission{}, err
 	}
@@ -57,7 +59,7 @@ func (a *EinoAnalyzer) Analyze(ctx context.Context, userContext string) (scan.Su
 		Name:                   "security-scan-coordinator",
 		Description:            "Coordinates exhaustive security discovery, validation, and attack-path analysis",
 		ChatModel:              a.chatModel,
-		Instruction:            coordinatorPrompt,
+		Instruction:            coordinatorInstruction(a.config.ScanPrompt),
 		SubAgents:              specialists,
 		WithoutGeneralSubAgent: true,
 		MaxIteration:           a.config.MaxIterations,
@@ -107,7 +109,7 @@ func (a *EinoAnalyzer) Analyze(ctx context.Context, userContext string) (scan.Su
 	return submission, nil
 }
 
-func createSpecialists(ctx context.Context, chatModel model.BaseChatModel, tools []tool.BaseTool, maxIterations int) ([]adk.Agent, error) {
+func createSpecialists(ctx context.Context, chatModel model.BaseChatModel, tools []tool.BaseTool, maxIterations int, followUpPrompt string) ([]adk.Agent, error) {
 	configs := []struct {
 		name        string
 		description string
@@ -122,7 +124,7 @@ func createSpecialists(ctx context.Context, chatModel model.BaseChatModel, tools
 		agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 			Name:          cfg.name,
 			Description:   cfg.description,
-			Instruction:   cfg.instruction,
+			Instruction:   specialistInstruction(cfg.instruction, followUpPrompt),
 			Model:         chatModel,
 			MaxIterations: maxIterations,
 			ToolsConfig: adk.ToolsConfig{

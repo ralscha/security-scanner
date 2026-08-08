@@ -836,7 +836,7 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 		}
 	}
 	receiptPath := filepath.Join(absOutput, "bulk-receipt.json")
-	receipt, runErr := bulk.Run(ctx, jobs, func(parent context.Context, job bulk.Job) (string, error) {
+	receipt, runErr := bulk.Run(ctx, jobs, bulk.OutcomeRunner(func(parent context.Context, job bulk.Job) (bulk.Outcome, error) {
 		scanCtx := parent
 		if *maxDuration > 0 {
 			var cancel context.CancelFunc
@@ -851,28 +851,36 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 			MaxAgentConcurrency: *maxAgentConcurrency, UserContext: job.Context,
 		})
 		if err != nil {
-			return "", err
+			return bulk.Outcome{}, err
+		}
+		outcome := bulk.Outcome{
+			ScanID: result.Manifest.ScanID, OutputDir: result.OutDir, Status: bulk.StatusCompleted,
+			FindingCount: len(result.Findings.Findings),
 		}
 		if result.Coverage.Summary.Unreviewed > 0 {
-			return result.Manifest.ScanID, fmt.Errorf("incomplete coverage: %d unreviewed files", result.Coverage.Summary.Unreviewed)
+			outcome.Status = bulk.StatusCompletedWithGaps
+			return outcome, nil
 		}
 		if evaluation := policy.Evaluate(result.Findings.Findings, threshold); evaluation.Violated {
-			return result.Manifest.ScanID, fmt.Errorf("severity policy violated by %d findings", len(evaluation.Matches))
+			return outcome, fmt.Errorf("severity policy violated by %d findings", len(evaluation.Matches))
 		}
-		return result.Manifest.ScanID, nil
-	}, bulk.Config{
+		return outcome, nil
+	}), bulk.Config{
 		Workers: *workers, MaxRetries: *retries, RetryDelay: *retryDelay, ReceiptPath: receiptPath,
 		MaxBudget: *maxBudget, EstimatedCost: *estimatedCost, Resume: true, OnEvent: progress,
 	})
-	completed, failed := 0, 0
+	completed, incomplete, failed := 0, 0, 0
 	for _, entry := range receipt.Jobs {
-		if entry.Status == "completed" {
+		switch entry.Status {
+		case bulk.StatusCompleted:
 			completed++
-		} else {
+		case bulk.StatusCompletedWithGaps:
+			incomplete++
+		default:
 			failed++
 		}
 	}
-	stdout.Printf("Receipt: %s\nCompleted: %d\nFailed: %d\n", receiptPath, completed, failed)
+	stdout.Printf("Receipt: %s\nCompleted: %d\nIncomplete: %d\nFailed: %d\n", receiptPath, completed, incomplete, failed)
 	if errors.Is(runErr, context.Canceled) {
 		return interruptionCode()
 	}
@@ -880,7 +888,7 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 		stderr.Printf("bulk-scan failed: %v\n", runErr)
 		return 2
 	}
-	if failed > 0 {
+	if incomplete > 0 || failed > 0 {
 		return 2
 	}
 	return 0

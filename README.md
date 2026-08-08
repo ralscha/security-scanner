@@ -12,7 +12,7 @@ The scan workflow adapts the strongest ideas from Codex Security's repository sc
 
 ## Architecture
 
-The Eino DeepAgent is the coordinator. It has three named sub-agents (`discovery`, `validation`, and `attack-path`) plus task tracking. Agents receive only read-only repository capabilities: `list_files`, `read_file`, and `search_code` (`search_file` is a provider-compatibility alias). They have no shell and cannot write to the target.
+The Eino DeepAgent is the coordinator. It has four named sub-agents: an independent `baseline` auditor plus focused `discovery`, adversarial `validation`, and `attack-path` specialists. The coordinator builds source-backed investigation packets, reconciles candidate results once, and retains full-inventory coverage responsibility. Agents receive only read-only repository capabilities: `list_files`, `read_file`, and `search_code` (`search_file` is a provider-compatibility alias). They have no shell and cannot write to the target.
 
 Provider construction is isolated in a registry. The scanner includes Eino adapters for OpenAI, Azure OpenAI, OpenRouter, Fireworks AI, Anthropic Claude, Google Gemini, Ollama, and Volcengine Ark. The `openai-compatible` provider also covers servers and vendors that expose a compatible chat-completions and tool-calling API, including self-hosted gateways.
 
@@ -279,7 +279,7 @@ Run the bulk scan:
   --max-budget 20 --estimated-scan-cost 2
 ```
 
-The atomic `bulk-receipt.json` supports resume. Budget units are operator estimates, not provider billing claims.
+The atomic `bulk-receipt.json` supports resume. Completed scans with coverage gaps are recorded as `completed_with_gaps`: they still make the bulk command exit `2`, but their sealed artifacts are preserved and are not rescanned on resume. Budget units are operator estimates, not provider billing claims.
 
 Provider adapters do not currently expose consistent usage accounting through Eino's shared model interface, so manifests do not claim token or billing totals. Bulk budget reservations are explicit operator-supplied estimates.
 

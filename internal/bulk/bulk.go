@@ -81,7 +81,12 @@ type Config struct {
 
 type Runner func(context.Context, Job) (string, error)
 
-type outcomeRunner func(context.Context, Job) (Outcome, error)
+type OutcomeRunner func(context.Context, Job) (Outcome, error)
+
+const (
+	StatusCompleted         = "completed"
+	StatusCompletedWithGaps = "completed_with_gaps"
+)
 
 func ParseInput(path string) ([]Job, error) {
 	data, err := os.ReadFile(path)
@@ -200,7 +205,7 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 				outcome, err := candidate(ctx, job)
 				return outcome.ScanID, outcome, err
 			}
-		case outcomeRunner:
+		case OutcomeRunner:
 			runner = func(ctx context.Context, job Job) (string, Outcome, error) {
 				outcome, err := candidate(ctx, job)
 				return outcome.ScanID, outcome, err
@@ -216,12 +221,22 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 		case Runner:
 			runner = func(ctx context.Context, job Job) (string, Outcome, error) {
 				scanID, err := candidate(ctx, job)
-				return scanID, Outcome{ScanID: scanID, OutputDir: job.OutputDir, Status: "completed"}, err
+				return scanID, Outcome{ScanID: scanID, OutputDir: job.OutputDir, Status: StatusCompleted}, err
 			}
 		case func(context.Context, Job) (string, error):
 			runner = func(ctx context.Context, job Job) (string, Outcome, error) {
 				scanID, err := candidate(ctx, job)
-				return scanID, Outcome{ScanID: scanID, OutputDir: job.OutputDir, Status: "completed"}, err
+				return scanID, Outcome{ScanID: scanID, OutputDir: job.OutputDir, Status: StatusCompleted}, err
+			}
+		case OutcomeRunner:
+			runner = func(ctx context.Context, job Job) (string, Outcome, error) {
+				outcome, err := candidate(ctx, job)
+				return outcome.ScanID, outcome, err
+			}
+		case func(context.Context, Job) (Outcome, error):
+			runner = func(ctx context.Context, job Job) (string, Outcome, error) {
+				outcome, err := candidate(ctx, job)
+				return outcome.ScanID, outcome, err
 			}
 		}
 	}
@@ -309,10 +324,25 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 				}
 				mu.Lock()
 				entry = &receipt.Jobs[index]
-				entry.ScanID, entry.CompletedAt = scanID, time.Now().UTC()
+				if outcome.ScanID == "" {
+					outcome.ScanID = scanID
+				}
+				if outcome.OutputDir == "" {
+					outcome.OutputDir = job.OutputDir
+				}
+				entry.ScanID, entry.CompletedAt = outcome.ScanID, time.Now().UTC()
 				entry.Outcome = outcome
 				if runErr == nil {
-					entry.Status = "completed"
+					switch outcome.Status {
+					case "", StatusCompleted:
+						entry.Status = StatusCompleted
+						entry.Outcome.Status = StatusCompleted
+					case StatusCompletedWithGaps:
+						entry.Status = StatusCompletedWithGaps
+					default:
+						entry.Status = "failed"
+						entry.Error = fmt.Sprintf("unsupported bulk outcome status %q", outcome.Status)
+					}
 				} else {
 					entry.Status, entry.Error = "failed", redact.Text(runErr.Error())
 				}
@@ -330,7 +360,7 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 	for index := range receipt.Jobs {
 		mu.Lock()
 		entry := &receipt.Jobs[index]
-		if entry.Status == "completed" {
+		if sealedStatus(entry.Status) {
 			mu.Unlock()
 			continue
 		}
@@ -388,11 +418,18 @@ func initialReceipt(jobs []Job, config Config) (Receipt, error) {
 	for _, job := range jobs {
 		entry := previous[job.ID]
 		entry.Job = job
-		if entry.Status != "completed" {
+		if legacyIncompleteOutcome(entry) {
+			entry.Status, entry.Error = StatusCompletedWithGaps, ""
+			entry.Outcome.Status = StatusCompletedWithGaps
+			entry.Outcome.ScanID = entry.ScanID
+			entry.Outcome.OutputDir = entry.OutputDir
+		}
+		if !sealedStatus(entry.Status) {
 			entry.Status, entry.Error, entry.ScanID = "pending", "", ""
+			entry.Outcome = Outcome{}
 		}
 		receipt.Jobs = append(receipt.Jobs, entry)
-		if entry.Status == "completed" {
+		if sealedStatus(entry.Status) {
 			receipt.ReservedCost += entry.Cost
 		}
 	}
@@ -400,9 +437,15 @@ func initialReceipt(jobs []Job, config Config) (Receipt, error) {
 }
 
 func finishReceipt(receipt *Receipt, path string, persistenceErr, runErr error) (Receipt, error) {
-	receipt.Status = "completed"
+	receipt.Status = StatusCompleted
 	for _, entry := range receipt.Jobs {
-		if entry.Status != "completed" {
+		if entry.Status == StatusCompletedWithGaps {
+			if receipt.Status == StatusCompleted {
+				receipt.Status = StatusCompletedWithGaps
+			}
+			continue
+		}
+		if entry.Status != StatusCompleted {
 			receipt.Status = "incomplete"
 			if runErr == nil {
 				runErr = fmt.Errorf("one or more bulk jobs did not complete")
@@ -418,6 +461,53 @@ func finishReceipt(receipt *Receipt, path string, persistenceErr, runErr error) 
 		return *receipt, fmt.Errorf("persist bulk receipt: %w", persistenceErr)
 	}
 	return *receipt, runErr
+}
+
+func sealedStatus(status string) bool {
+	return status == StatusCompleted || status == StatusCompletedWithGaps
+}
+
+func legacyIncompleteOutcome(entry JobReceipt) bool {
+	if entry.Status != "failed" || !strings.HasPrefix(strings.ToLower(entry.Error), "incomplete coverage:") {
+		return false
+	}
+	guard, err := outputpolicy.OpenPrivateDir(entry.OutputDir)
+	if err != nil {
+		return false
+	}
+	manifestData, err := outputpolicy.ReadPrivateFile(guard, "scan-manifest.json")
+	if err != nil {
+		return false
+	}
+	var manifest struct {
+		ScanID    string            `json:"scan_id"`
+		Status    string            `json:"status"`
+		Artifacts map[string]string `json:"artifacts"`
+	}
+	if json.Unmarshal(manifestData, &manifest) != nil || manifest.ScanID != entry.ScanID || manifest.Status != StatusCompletedWithGaps {
+		return false
+	}
+	coverageData, err := outputpolicy.ReadPrivateFile(guard, "coverage.json")
+	if err != nil {
+		return false
+	}
+	var coverage struct {
+		Summary struct {
+			Unreviewed int `json:"unreviewed"`
+		} `json:"summary"`
+	}
+	if json.Unmarshal(coverageData, &coverage) != nil || coverage.Summary.Unreviewed <= 0 {
+		return false
+	}
+	for _, name := range manifest.Artifacts {
+		if filepath.Base(name) != name {
+			return false
+		}
+		if _, err := outputpolicy.ReadPrivateFile(guard, name); err != nil {
+			return false
+		}
+	}
+	return len(manifest.Artifacts) > 0
 }
 
 func Transient(err error) bool {

@@ -12,7 +12,7 @@ Interactive scans emit phase messages on stderr unless `--quiet` is used. Bulk s
 
 ## Reliability And Cost
 
-Bulk concurrency is bounded by `--workers`; retries use exponential backoff from `--retry-delay`; completed receipt entries resume without another model call. `--max-budget` reserves the operator-supplied `--estimated-scan-cost` for each scheduled repository. `--max-scans` is an independent hard-count guardrail.
+Bulk concurrency is bounded by `--workers`; retries use exponential backoff from `--retry-delay`; sealed receipt entries resume without another model call. This includes `completed_with_gaps` scans: their artifacts remain terminal and available, while the bulk command still returns exit `2` for incomplete coverage. `--max-budget` reserves the operator-supplied `--estimated-scan-cost` for each scheduled repository. `--max-scans` is an independent hard-count guardrail.
 
 Within one repository scan, `--max-agent-concurrency` bounds concurrent Eino model requests across the coordinator and all specialists. The limiter is provider-neutral and remains shared after immutable tool binding.
 

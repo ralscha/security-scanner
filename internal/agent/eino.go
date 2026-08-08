@@ -115,7 +115,8 @@ func createSpecialists(ctx context.Context, chatModel model.BaseChatModel, tools
 		description string
 		instruction string
 	}{
-		{name: "discovery", description: "Discovers concrete vulnerability candidates and evidence paths", instruction: discoveryPrompt},
+		{name: "baseline", description: "Runs an independent general security audit without coordinator hypotheses", instruction: baselinePrompt},
+		{name: "discovery", description: "Investigates focused source-backed security questions and evidence paths", instruction: discoveryPrompt},
 		{name: "validation", description: "Adversarially validates or rejects vulnerability candidates", instruction: validationPrompt},
 		{name: "attack-path", description: "Establishes reachability, impact, severity, and remediation", instruction: attackPathPrompt},
 	}

@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	outputpolicy "security-scanner/internal/output"
 )
 
 func TestPendingReceiptUsesOmitZero(t *testing.T) {
@@ -130,6 +132,98 @@ func TestRunBoundsConcurrencyRetriesAndResumes(t *testing.T) {
 	}
 	if calls.Load() != before {
 		t.Fatal("completed receipt entries were rerun")
+	}
+}
+
+func TestRunTreatsCompletedWithGapsAsSealedAcrossResume(t *testing.T) {
+	jobs, err := BuildJobs([]string{t.TempDir()}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	runner := OutcomeRunner(func(_ context.Context, job Job) (Outcome, error) {
+		calls.Add(1)
+		return Outcome{
+			ScanID: "scan-with-gaps", OutputDir: job.OutputDir,
+			Status: StatusCompletedWithGaps, FindingCount: 2,
+		}, nil
+	})
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	receipt, err := Run(context.Background(), jobs, runner, Config{
+		Workers: 1, MaxRetries: 3, RetryDelay: time.Millisecond, ReceiptPath: receiptPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 || receipt.Status != StatusCompletedWithGaps || receipt.Jobs[0].Status != StatusCompletedWithGaps {
+		t.Fatalf("incomplete result was not sealed: calls=%d receipt=%#v", calls.Load(), receipt)
+	}
+	if receipt.Jobs[0].Outcome.FindingCount != 2 {
+		t.Fatalf("outcome metadata was not preserved: %#v", receipt.Jobs[0].Outcome)
+	}
+	if _, err := Run(context.Background(), jobs, runner, Config{
+		Workers: 1, Resume: true, ReceiptPath: receiptPath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatal("sealed incomplete result was rerun during resume")
+	}
+}
+
+func TestRunMigratesLegacyIncompleteReceiptWhenArtifactsAreSealed(t *testing.T) {
+	jobs, err := BuildJobs([]string{t.TempDir()}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := jobs[0]
+	guard, err := outputpolicy.PreparePrivateDir(job.OutputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := map[string]string{
+		"findings": "findings.json", "coverage": "coverage.json",
+		"report": "report.md", "sarif": "results.sarif",
+	}
+	manifest, err := json.Marshal(map[string]any{
+		"scan_id": "scan-legacy", "status": StatusCompletedWithGaps, "artifacts": artifacts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"scan-manifest.json": manifest,
+		"coverage.json":      []byte(`{"summary":{"unreviewed":1}}`),
+		"findings.json":      []byte(`{"findings":[]}`),
+		"report.md":          []byte("# Incomplete scan\n"),
+		"results.sarif":      []byte(`{}`),
+	}
+	for name, data := range files {
+		if err := outputpolicy.WritePrivateFileAtomic(guard, name, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	legacy := Receipt{
+		SchemaVersion: "1", Status: "incomplete", StartedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		Jobs: []JobReceipt{{
+			Job: job, Status: "failed", ScanID: "scan-legacy", Attempts: 1,
+			Error: "incomplete coverage: 1 unreviewed files", Cost: 1,
+		}},
+	}
+	if err := saveReceipt(receiptPath, legacy); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	receipt, err := Run(context.Background(), jobs, OutcomeRunner(func(context.Context, Job) (Outcome, error) {
+		calls.Add(1)
+		return Outcome{}, errors.New("legacy sealed scan should not run")
+	}), Config{Workers: 1, Resume: true, ReceiptPath: receiptPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 0 || receipt.Status != StatusCompletedWithGaps || receipt.Jobs[0].Status != StatusCompletedWithGaps {
+		t.Fatalf("legacy incomplete result was not recovered: calls=%d receipt=%#v", calls.Load(), receipt)
 	}
 }
 

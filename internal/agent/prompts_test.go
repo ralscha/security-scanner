@@ -33,6 +33,23 @@ func TestCoordinatorInstructionIncludesCustomPrompt(t *testing.T) {
 	}
 }
 
+func TestCoordinatorUsesIndependentBaselineAndFocusedInvestigations(t *testing.T) {
+	for _, required := range []string{
+		"independent general audit", "before sharing any threat hypotheses",
+		"focused investigation packets", "Combine baseline and focused-investigation candidates once",
+	} {
+		if !strings.Contains(coordinatorPrompt, required) {
+			t.Fatalf("coordinator prompt is missing %q", required)
+		}
+	}
+	if !strings.Contains(baselinePrompt, "without relying on coordinator-generated hypotheses") {
+		t.Fatal("baseline prompt does not preserve an independent audit")
+	}
+	if !strings.Contains(discoveryPrompt, "assigned source-backed security packet") || !strings.Contains(discoveryPrompt, "counterevidence") {
+		t.Fatal("discovery prompt does not define focused, adversarial investigations")
+	}
+}
+
 func TestSpecialistInstructionIncludesFollowUpPrompt(t *testing.T) {
 	custom := "\nCross-check taint paths against authorization guards.\n"
 	instruction := specialistInstruction(discoveryPrompt, custom)

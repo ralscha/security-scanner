@@ -70,6 +70,25 @@ func TestRepositoryReadTrackingAndSearch(t *testing.T) {
 	}
 }
 
+func TestRepositoryRejectsContentChangedAfterInventory(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "app.go")
+	if err := os.WriteFile(path, []byte("package old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := scan.BuildInventory(root, scan.InventoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("package new\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewRepository(inv, NewReadTracker()).readFile(context.Background(), readFileArgs{Path: "app.go"})
+	if err == nil || !strings.Contains(err.Error(), "changed after inventory") {
+		t.Fatalf("stale repository read was not rejected: %v", err)
+	}
+}
+
 func TestRepositoryToolReturnsInvalidRangeToModel(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "app.go"), []byte("first\nsecond\n"), 0o600); err != nil {

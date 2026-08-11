@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,23 @@ func TestValidateAndNormalizeSubmission(t *testing.T) {
 	}
 	if !strings.Contains(first[0].Locations[0].Snippet, "execute(input)") {
 		t.Fatalf("missing source snippet: %q", first[0].Locations[0].Snippet)
+	}
+}
+
+func TestValidateSubmissionAcceptsMoreThanTwoHundredFindings(t *testing.T) {
+	inv := &Inventory{Files: []File{{Path: "app.go", Lines: 1, Reviewable: true}}}
+	finding := FindingDraft{
+		Title: "Issue", Severity: SeverityLow, Confidence: ConfidenceHigh, CWEIDs: []string{"CWE-20"},
+		Summary: "Summary", Impact: "Impact", Evidence: "Evidence", Remediation: "Remediation", AttackPath: "Attack path",
+		Locations: []Location{{Path: "app.go", StartLine: 1, Role: "sink"}},
+	}
+	submission := Submission{ThreatModel: "Threat model", Findings: make([]FindingDraft, 201)}
+	for index := range submission.Findings {
+		submission.Findings[index] = finding
+		submission.Findings[index].Title = fmt.Sprintf("Issue %d", index)
+	}
+	if problems := ValidateSubmission(inv, submission); len(problems) != 0 {
+		t.Fatalf("large valid submission was rejected: %v", problems)
 	}
 }
 

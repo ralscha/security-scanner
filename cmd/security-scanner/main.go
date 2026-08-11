@@ -764,12 +764,12 @@ func runRemediation(kind string, args []string, stdout, stderr *checkedWriter) i
 
 func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 	if len(args) == 0 {
-		stderr.Println("Usage: security-scanner bulk-scan INPUT --output-dir PATH [options]")
+		stderr.Println("Usage: security-scanner bulk-scan [options] INPUT")
 		return 2
 	}
-	inputPath := args[0]
 	flags := flag.NewFlagSet("bulk-scan", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	explicitInput := flags.String("input", "", "bulk input file; may also be supplied positionally")
 	outputDir := flags.String("output-dir", "", "directory for isolated scans and the resumable receipt")
 	workers := flags.Int("workers", 2, "maximum concurrent repository scans")
 	retries := flags.Int("retries", 2, "retry count for failed scans")
@@ -791,9 +791,20 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 	requestTimeout := flags.Duration("request-timeout", 10*time.Minute, "timeout per model request")
 	maxDuration := flags.Duration("max-duration", 45*time.Minute, "deadline for each repository scan")
 	jsonProgress := flags.Bool("json-progress", false, "write JSON progress events")
-	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
+	positionals, err := parseInterspersedFlags(flags, args)
+	if err != nil {
+		stderr.Printf("bulk-scan failed: %v\n", err)
 		return 2
 	}
+	inputs := append([]string(nil), positionals...)
+	if strings.TrimSpace(*explicitInput) != "" {
+		inputs = append(inputs, *explicitInput)
+	}
+	if len(inputs) != 1 {
+		stderr.Println("bulk-scan requires exactly one input file, supplied positionally or with --input")
+		return 2
+	}
+	inputPath := inputs[0]
 	if *outputDir == "" || *workers <= 0 || *retries < 0 || *maxScans < 0 || *retryDelay <= 0 || *maxAgentConcurrency <= 0 {
 		stderr.Println("bulk-scan requires --output-dir, positive --workers, and non-negative retry/guardrail values")
 		return 2
@@ -892,6 +903,47 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 		return 2
 	}
 	return 0
+}
+
+type booleanFlag interface {
+	IsBoolFlag() bool
+}
+
+func parseInterspersedFlags(flags *flag.FlagSet, args []string) ([]string, error) {
+	flagArgs := make([]string, 0, len(args))
+	positionals := make([]string, 0, 1)
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		if argument == "--" {
+			return nil, fmt.Errorf("the -- option terminator is not supported")
+		}
+		if argument == "-" || !strings.HasPrefix(argument, "-") {
+			positionals = append(positionals, argument)
+			continue
+		}
+		nameValue := strings.TrimLeft(argument, "-")
+		name, _, hasValue := strings.Cut(nameValue, "=")
+		defined := flags.Lookup(name)
+		if defined == nil {
+			return nil, fmt.Errorf("flag provided but not defined: -%s", name)
+		}
+		flagArgs = append(flagArgs, argument)
+		if hasValue {
+			continue
+		}
+		if candidate, ok := defined.Value.(booleanFlag); ok && candidate.IsBoolFlag() {
+			continue
+		}
+		if index+1 >= len(args) {
+			return nil, fmt.Errorf("flag needs an argument: -%s", name)
+		}
+		index++
+		flagArgs = append(flagArgs, args[index])
+	}
+	if err := flags.Parse(flagArgs); err != nil {
+		return nil, err
+	}
+	return positionals, nil
 }
 
 func newSignalContext(parent context.Context) (context.Context, func(), func() int) {
@@ -1291,7 +1343,7 @@ func printUsage(w *checkedWriter) {
 	w.Println("  security-scanner scan preflight [options]")
 	w.Println("  security-scanner inventory [options]")
 	w.Println("  security-scanner providers")
-	w.Println("  security-scanner bulk-scan INPUT --output-dir PATH [options]")
+	w.Println("  security-scanner bulk-scan [options] INPUT")
 	w.Println("  security-scanner scans <list|show|rerun|match|compare>")
 	w.Println("  security-scanner findings false-positive OCCURRENCE_ID --reason TEXT")
 	w.Println("  security-scanner validate [options] FINDING_OR_PROMPT")

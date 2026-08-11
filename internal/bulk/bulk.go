@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gofrs/flock"
 
 	outputpolicy "security-scanner/internal/output"
 	"security-scanner/internal/redact"
@@ -105,6 +108,11 @@ func ParseInput(path string) ([]Job, error) {
 		}
 		return normalizeJobs(jobs)
 	}
+	if csvJobs, recognized, err := parseCSVInput(data, strings.EqualFold(filepath.Ext(path), ".csv")); err != nil {
+		return nil, fmt.Errorf("parse bulk CSV: %w", err)
+	} else if recognized {
+		return normalizeJobs(csvJobs)
+	}
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -116,6 +124,73 @@ func ParseInput(path string) ([]Job, error) {
 		return nil, fmt.Errorf("parse bulk input: %w", err)
 	}
 	return normalizeJobs(jobs)
+}
+
+func parseCSVInput(data []byte, required bool) ([]Job, bool, error) {
+	reader := csv.NewReader(strings.NewReader(string(data)))
+	reader.FieldsPerRecord = -1
+	reader.TrimLeadingSpace = true
+	records, err := reader.ReadAll()
+	if err != nil {
+		if required {
+			return nil, true, err
+		}
+		return nil, false, nil
+	}
+	if len(records) == 0 {
+		return nil, required, nil
+	}
+	targetColumn, contextColumn := -1, -1
+	for column, raw := range records[0] {
+		header := strings.TrimSpace(raw)
+		if column == 0 {
+			header = strings.TrimPrefix(header, "\ufeff")
+		}
+		switch strings.ToLower(header) {
+		case "target", "repository", "path":
+			if targetColumn >= 0 {
+				return nil, true, fmt.Errorf("CSV contains multiple target or repository columns")
+			}
+			targetColumn = column
+		case "context":
+			if contextColumn >= 0 {
+				return nil, true, fmt.Errorf("CSV contains multiple context columns")
+			}
+			contextColumn = column
+		}
+	}
+	if targetColumn < 0 {
+		if required {
+			return nil, true, fmt.Errorf("CSV requires a target or repository column")
+		}
+		return nil, false, nil
+	}
+	if !required && len(records[0]) == 1 {
+		return nil, false, nil
+	}
+	jobs := make([]Job, 0, len(records)-1)
+	for rowNumber, record := range records[1:] {
+		if targetColumn >= len(record) {
+			return nil, true, fmt.Errorf("row %d has no repository value", rowNumber+2)
+		}
+		target := strings.TrimSpace(record[targetColumn])
+		contextValue := ""
+		if contextColumn >= 0 && contextColumn < len(record) {
+			contextValue = strings.TrimSpace(record[contextColumn])
+		}
+		if target == "" {
+			blank := true
+			for _, value := range record {
+				blank = blank && strings.TrimSpace(value) == ""
+			}
+			if blank {
+				continue
+			}
+			return nil, true, fmt.Errorf("row %d has an empty repository value", rowNumber+2)
+		}
+		jobs = append(jobs, Job{Target: target, Context: contextValue})
+	}
+	return jobs, true, nil
 }
 
 func normalizeJobs(jobs []Job) ([]Job, error) {
@@ -264,6 +339,11 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 	if config.MaxBudget > 0 && config.EstimatedCost <= 0 {
 		return Receipt{}, fmt.Errorf("estimated scan cost must be positive when max budget is set")
 	}
+	supervisor, err := acquireSupervisorLock(config.ReceiptPath)
+	if err != nil {
+		return Receipt{}, err
+	}
+	defer func() { _ = supervisor.Close() }()
 	receipt, err := initialReceipt(jobs, config)
 	if err != nil {
 		return Receipt{}, err
@@ -387,6 +467,47 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 		return finished, nil
 	}
 	return finished, finishErr
+}
+
+func acquireSupervisorLock(receiptPath string) (*flock.Flock, error) {
+	if strings.TrimSpace(receiptPath) == "" {
+		return nil, fmt.Errorf("receipt path is required")
+	}
+	absReceipt, err := filepath.Abs(receiptPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve bulk receipt path: %w", err)
+	}
+	if _, err := outputpolicy.EnsurePrivateDir(filepath.Dir(absReceipt)); err != nil {
+		return nil, fmt.Errorf("prepare bulk supervisor directory: %w", err)
+	}
+	lockPath := absReceipt + ".lock"
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("prepare bulk supervisor lock: %w", err)
+	}
+	opened, statErr := file.Stat()
+	closeErr := file.Close()
+	named, lstatErr := os.Lstat(lockPath)
+	if statErr != nil || closeErr != nil || lstatErr != nil {
+		return nil, fmt.Errorf("inspect bulk supervisor lock: %w", errors.Join(statErr, closeErr, lstatErr))
+	}
+	if !opened.Mode().IsRegular() || named.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, named) {
+		return nil, fmt.Errorf("bulk supervisor lock must be a non-symlink regular file: %s", lockPath)
+	}
+	if err := outputpolicy.SecurePrivateFile(lockPath); err != nil {
+		return nil, fmt.Errorf("secure bulk supervisor lock: %w", err)
+	}
+	supervisor := flock.New(lockPath, flock.SetFlag(os.O_CREATE|os.O_RDWR), flock.SetPermissions(0o600))
+	locked, err := supervisor.TryLock()
+	if err != nil {
+		_ = supervisor.Close()
+		return nil, fmt.Errorf("acquire bulk supervisor lock: %w", err)
+	}
+	if !locked {
+		_ = supervisor.Close()
+		return nil, fmt.Errorf("bulk supervisor is already running for receipt: %s", absReceipt)
+	}
+	return supervisor, nil
 }
 
 func initialReceipt(jobs []Job, config Config) (Receipt, error) {

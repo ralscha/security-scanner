@@ -440,6 +440,29 @@ func TestLifecycleAndBulkCommandsValidateArguments(t *testing.T) {
 	}
 }
 
+func TestBulkScanAcceptsInputBeforeAfterOrWithinFlags(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.csv")
+	output := t.TempDir()
+	for _, args := range [][]string{
+		{"bulk-scan", missing, "--output-dir", output},
+		{"bulk-scan", "--output-dir", output, missing},
+		{"bulk-scan", "--input", missing, "--output-dir", output},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "read bulk input") {
+			t.Errorf("%v: exit=%d stderr=%s", args, code, stderr.String())
+		}
+	}
+}
+
+func TestBulkScanRejectsMultipleInputSources(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"bulk-scan", "repos.csv", "--input", "other.csv", "--output-dir", t.TempDir()}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "exactly one input") {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+}
+
 func TestFindingsFalsePositiveRequiresReason(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"findings", "false-positive", "scan-1:F-ABC"}, &stdout, &stderr)

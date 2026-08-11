@@ -4,7 +4,7 @@
 
 The scan workflow adapts the strongest ideas from Codex Security's repository scan process:
 
-- Freeze one file inventory before analysis and account for every in-scope file.
+- Freeze one content-attested file inventory before analysis and account for every in-scope file.
 - Separate candidate discovery, adversarial validation, and attack-path/severity reasoning.
 - Require repository-relative, line-level evidence for every finding.
 - Treat incomplete coverage as an explicit report state instead of claiming success.
@@ -18,8 +18,8 @@ Provider construction is isolated in a registry. The scanner includes Eino adapt
 
 Go code owns the security boundary and final output:
 
-- The inventory honors root and nested `.gitignore` rules, and excludes VCS metadata, dependency/build directories, `.scanner`, and explicit `--exclude` paths.
-- Symlinks are inventoried as skipped and checked again before each read.
+- The inventory honors root and nested `.gitignore` rules, and excludes VCS metadata, dependency/build directories, `.scanner`, and explicit `--exclude` paths. An exact `--path` selection overrides ignore and default dependency/build exclusions, but never VCS metadata, `.scanner`, the output directory, or `--exclude`.
+- Symlinks and non-regular filesystem entries are inventoried as skipped. Content digests are checked on every read and again before artifacts are published, so changed targets fail closed.
 - Full-file coverage is measured from actual `read_file` line ranges. Search results do not count as review.
 - `submit_scan` rejects unknown files, invalid lines, malformed CWE values, and incomplete finding fields.
 - Finding IDs, source snippets, coverage, Markdown, and SARIF are generated outside the model.
@@ -28,7 +28,7 @@ Repository contents and `--context` are always treated as untrusted analysis dat
 
 ## Build
 
-Requires Go 1.25.5 or newer.
+Requires Go 1.26.5 or newer.
 
 ```bash
 go build -o security-scanner ./cmd/security-scanner
@@ -259,7 +259,7 @@ Authentication can be selected explicitly with `--auth auto`, `env`, `api-key`, 
 ./security-scanner scan preflight --target /path/to/repo --json
 ```
 
-Bulk input may be a JSON string array, a JSON job array with per-repository `context`, or a newline-delimited list. A job array has this shape:
+Bulk input may be a JSON string array, a JSON job array with per-repository `context`, a newline-delimited list, or a header-based CSV. CSV accepts `target`, `repository`, or `path` as the repository column and an optional `context` column in any order. Use a `.csv` extension for single-column CSV input so it cannot be confused with a newline-delimited list. A job array has this shape:
 
 ```json
 [
@@ -268,6 +268,13 @@ Bulk input may be a JSON string array, a JSON job array with per-repository `con
     "context": "Internet-facing service; authenticated users are untrusted."
   }
 ]
+```
+
+Equivalent CSV:
+
+```csv
+context,repository
+Internet-facing service; authenticated users are untrusted.,/path/to/repo
 ```
 
 Run the bulk scan:
@@ -279,7 +286,9 @@ Run the bulk scan:
   --max-budget 20 --estimated-scan-cost 2
 ```
 
-The atomic `bulk-receipt.json` supports resume. Completed scans with coverage gaps are recorded as `completed_with_gaps`: they still make the bulk command exit `2`, but their sealed artifacts are preserved and are not rescanned on resume. Budget units are operator estimates, not provider billing claims.
+The input may appear before or after options, or be supplied with `--input repos.json`.
+
+The atomic `bulk-receipt.json` supports resume. An OS-backed supervisor lock prevents concurrent bulk processes from using the same receipt and output directory. Completed scans with coverage gaps are recorded as `completed_with_gaps`: they still make the bulk command exit `2`, but their sealed artifacts are preserved and are not rescanned on resume. Budget units are operator estimates, not provider billing claims.
 
 Provider adapters do not currently expose consistent usage accounting through Eino's shared model interface, so manifests do not claim token or billing totals. Bulk budget reservations are explicit operator-supplied estimates.
 

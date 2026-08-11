@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -211,6 +212,9 @@ func (r *Repository) readFile(_ context.Context, args readFileArgs) (string, err
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", file.Path, err)
 	}
+	if err := scan.VerifyFileContent(file, content); err != nil {
+		return "", err
+	}
 	text := strings.ReplaceAll(string(content), "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 	if text == "" {
@@ -273,11 +277,14 @@ func (r *Repository) searchCode(_ context.Context, args searchCodeArgs) (string,
 		if err != nil {
 			continue
 		}
-		f, err := os.Open(path)
+		content, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		scanner := bufio.NewScanner(f)
+		if err := scan.VerifyFileContent(file, content); err != nil {
+			return "", err
+		}
+		scanner := bufio.NewScanner(bytes.NewReader(content))
 		scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 		line := 0
 		for scanner.Scan() {
@@ -293,7 +300,6 @@ func (r *Repository) searchCode(_ context.Context, args searchCodeArgs) (string,
 				}
 			}
 		}
-		_ = f.Close()
 		if len(hits) >= limit {
 			break
 		}

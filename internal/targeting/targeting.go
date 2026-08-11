@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"security-scanner/internal/trustedexec"
 )
 
 type Selector struct {
@@ -108,13 +110,13 @@ func gitPaths(ctx context.Context, root, mode, ref string) ([]string, error) {
 	}
 	var outputs [][]byte
 	if mode == "diff" {
-		output, err := runGit(ctx, gitRoot, "diff", "--name-only", "-z", ref, "--")
+		output, err := runGit(ctx, gitRoot, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", ref, "--")
 		if err != nil {
 			return nil, fmt.Errorf("resolve diff %q: %w", ref, err)
 		}
 		outputs = append(outputs, output)
 	} else {
-		tracked, err := runGit(ctx, gitRoot, "diff", "--name-only", "-z", "HEAD", "--")
+		tracked, err := runGit(ctx, gitRoot, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "HEAD", "--")
 		if err != nil {
 			return nil, fmt.Errorf("resolve working tree changes: %w", err)
 		}
@@ -154,7 +156,17 @@ func pathsUnderRoot(root, gitRoot string, outputs [][]byte) []string {
 }
 
 func runGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	git, err := trustedexec.Resolve("git", dir)
+	if err != nil {
+		return nil, err
+	}
+	environment := trustedexec.WithoutVariables(git.Env,
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+		"GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS",
+	)
+	commandArgs := append([]string{"-C", dir}, args...)
+	command := exec.CommandContext(ctx, git.Path, commandArgs...)
+	command.Env = append(environment, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	output, err := command.Output()
 	if err == nil {
 		return output, nil

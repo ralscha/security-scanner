@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,5 +70,25 @@ func TestFinalizeMarksIncompleteCoverage(t *testing.T) {
 	}
 	if result.Manifest.Status != "completed_with_gaps" || result.Coverage.Summary.Unreviewed != 1 {
 		t.Fatalf("incomplete coverage was not surfaced: %#v", result)
+	}
+}
+
+func TestFinalizeRejectsChangedTarget(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "app.go", []byte("package old\n"))
+	inv, err := BuildInventory(root, InventoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, root, "app.go", []byte("package new\n"))
+	out := filepath.Join(t.TempDir(), "report")
+	_, err = Finalize(inv, completeTracker{"app.go": true}, Submission{ThreatModel: "Untrusted callers."}, FinalizeOptions{
+		OutputDir: out, Provider: "test-provider", Model: "test", StartedAt: time.Now(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "scan target changed") {
+		t.Fatalf("stale target was not rejected: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(out, "scan-manifest.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("stale scan manifest was published: %v", statErr)
 	}
 }

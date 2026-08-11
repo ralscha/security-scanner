@@ -8,6 +8,7 @@ This matrix is the implementation contract for the parity roadmap. A capability 
 | Path targeting | `scan --path` (repeatable) | Implemented | `internal/targeting`, inventory and CLI tests |
 | Committed diff targeting | `scan --diff REF` | Implemented | targeting git integration test |
 | Working-tree targeting | `scan --working-tree` | Implemented | targeting git integration test |
+| Content-attested target | fixed inventory and finalization | Implemented | inventory, repository-read and report finalization tests |
 | Configuration-only execution | `scan --dry-run` | Implemented | CLI dry-run test |
 | Severity policy | `scan --fail-on-severity` | Implemented | `internal/policy`, policy tests |
 | Stable exit semantics | process exit status | Implemented | `docs/EXIT_CODES.md`, CLI tests |
@@ -18,6 +19,6 @@ This matrix is the implementation contract for the parity roadmap. A capability 
 | Validation | `validate` | Implemented | Eino reviewer, grounded-result validators and tests |
 | Patch assist | `patch` | Implemented | bounded proposal schema, non-overwriting export and tests |
 | Preflight and explicit auth | `scan preflight`, `scan --auth` | Implemented | `internal/preflight`, auth resolution tests |
-| Bulk orchestration | `bulk-scan` | Implemented | `internal/bulk`, resume/retry/budget tests |
+| Bulk orchestration | `bulk-scan` | Implemented | `internal/bulk`, JSON/CSV/list parsing, supervisor lock, resume/retry/budget tests |
 
 The matrix is updated in the same change that completes a capability.

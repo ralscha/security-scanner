@@ -40,8 +40,14 @@ func Finalize(inv *Inventory, tracker CoverageTracker, submission Submission, op
 	if opts.OutputDir == "" {
 		return nil, fmt.Errorf("output directory is required")
 	}
+	if err := VerifyInventory(inv); err != nil {
+		return nil, err
+	}
 	findings, err := NormalizeFindings(inv, submission.Findings)
 	if err != nil {
+		return nil, err
+	}
+	if err := VerifyInventory(inv); err != nil {
 		return nil, err
 	}
 	coverage := buildCoverage(inv, tracker)

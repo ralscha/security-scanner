@@ -15,9 +15,6 @@ func ValidateSubmission(inv *Inventory, submission Submission) []string {
 	if strings.TrimSpace(submission.ThreatModel) == "" {
 		problems = append(problems, "threat_model is required")
 	}
-	if len(submission.Findings) > 200 {
-		problems = append(problems, "findings exceeds maximum of 200")
-	}
 	files := make(map[string]File, len(inv.Files))
 	for _, file := range inv.Files {
 		files[file.Path] = file

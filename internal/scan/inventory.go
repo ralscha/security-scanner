@@ -3,12 +3,14 @@ package scan
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -21,6 +23,10 @@ var defaultExcludedDirs = map[string]struct{}{
 	"node_modules": {}, "vendor": {},
 	"dist": {}, "build": {}, "target": {},
 	".idea": {}, ".vscode": {},
+}
+
+var protectedExcludedDirs = map[string]struct{}{
+	".git": {}, ".hg": {}, ".svn": {}, ".scanner": {},
 }
 
 type InventoryOptions struct {
@@ -66,7 +72,11 @@ func BuildInventory(root string, opts InventoryOptions) (*Inventory, error) {
 	ignoreMatcher := gitignore.New("")
 	ignoreMatcher.AddFromFile(filepath.Join(absRoot, ".gitignore"), "")
 
-	inv := &Inventory{Root: absRoot}
+	snapshotOptions := opts
+	snapshotOptions.Excludes = append([]string(nil), opts.Excludes...)
+	snapshotOptions.Includes = append([]string(nil), opts.Includes...)
+	inv := &Inventory{Root: absRoot, options: snapshotOptions, snapshotReady: true}
+	forcedDirs := make(map[string]struct{})
 	err = filepath.WalkDir(absRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -79,17 +89,24 @@ func BuildInventory(root string, opts InventoryOptions) (*Inventory, error) {
 		if rel == "." {
 			return nil
 		}
-		if entry.IsDir() && shouldSkipDir(rel, entry.Name(), outputRel, excludes) {
-			return filepath.SkipDir
-		}
 		if entry.IsDir() {
-			if ignoreMatcher.MatchPath(rel, true) {
+			skip, forced := directoryDisposition(rel, entry.Name(), outputRel, excludes, includes)
+			if skip {
 				return filepath.SkipDir
+			}
+			if ignoreMatcher.MatchPath(rel, true) {
+				if !explicitScopeTargets(rel, includes) {
+					return filepath.SkipDir
+				}
+				forced = true
+			}
+			if forced {
+				forcedDirs[rel] = struct{}{}
 			}
 			ignoreMatcher.AddFromFile(filepath.Join(path, ".gitignore"), rel)
 			return nil
 		}
-		if ignoreMatcher.MatchPath(rel, false) {
+		if ignoreMatcher.MatchPath(rel, false) && !exactlyIncluded(rel, includes) && !underForcedDir(rel, forcedDirs) {
 			return nil
 		}
 		if len(includes) > 0 && !includedPath(rel, includes) {
@@ -99,24 +116,38 @@ func BuildInventory(root string, opts InventoryOptions) (*Inventory, error) {
 			inv.Files = append(inv.Files, File{Path: rel, Reviewable: false, SkipReason: "symlink"})
 			return nil
 		}
+		if entry.Type()&os.ModeType != 0 {
+			inv.Files = append(inv.Files, File{Path: rel, Reviewable: false, SkipReason: "special_file"})
+			return nil
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
+		}
+		if !info.Mode().IsRegular() {
+			inv.Files = append(inv.Files, File{Path: rel, Size: info.Size(), Reviewable: false, SkipReason: "special_file"})
+			return nil
 		}
 		file := File{Path: rel, Size: info.Size(), Language: detectLanguage(rel), Reviewable: true}
 		if opts.MaxFileBytes > 0 && info.Size() > opts.MaxFileBytes {
 			file.Reviewable = false
 			file.SkipReason = "file_too_large"
+			file.digest, err = digestFile(path)
+			if err != nil {
+				file.SkipReason = "unreadable"
+			}
 		} else {
-			lines, binary, err := inspectFile(path)
+			lines, binary, digest, err := inspectFile(path)
 			if err != nil {
 				file.Reviewable = false
 				file.SkipReason = "unreadable"
 			} else if binary {
 				file.Reviewable = false
 				file.SkipReason = "binary"
+				file.digest = digest
 			} else {
 				file.Lines = lines
+				file.digest = digest
 			}
 		}
 		inv.Files = append(inv.Files, file)
@@ -127,6 +158,39 @@ func BuildInventory(root string, opts InventoryOptions) (*Inventory, error) {
 	}
 	sort.Slice(inv.Files, func(i, j int) bool { return inv.Files[i].Path < inv.Files[j].Path })
 	return inv, nil
+}
+
+func VerifyInventory(inv *Inventory) error {
+	if inv == nil {
+		return fmt.Errorf("inventory is required")
+	}
+	if !inv.snapshotReady {
+		return nil
+	}
+	current, err := BuildInventory(inv.Root, inv.options)
+	if err != nil {
+		return fmt.Errorf("scan target changed after inventory: %w", err)
+	}
+	if len(current.Files) != len(inv.Files) {
+		return fmt.Errorf("scan target changed after inventory: file set changed")
+	}
+	for index := range inv.Files {
+		if inv.Files[index] != current.Files[index] {
+			return fmt.Errorf("scan target changed after inventory: %s", inv.Files[index].Path)
+		}
+	}
+	return nil
+}
+
+func VerifyFileContent(file File, content []byte) error {
+	if file.digest == "" {
+		return nil
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(content))
+	if int64(len(content)) != file.Size || digest != file.digest {
+		return fmt.Errorf("file %q changed after inventory", file.Path)
+	}
+	return nil
 }
 
 func normalizeIncludes(values []string) []string {
@@ -154,25 +218,53 @@ func includedPath(path string, includes []string) bool {
 	return false
 }
 
-func shouldSkipDir(rel, name, outputRel string, excludes map[string]struct{}) bool {
-	if _, ok := defaultExcludedDirs[name]; ok {
-		return true
+func directoryDisposition(rel, name, outputRel string, excludes map[string]struct{}, includes []string) (skip, forced bool) {
+	if _, ok := protectedExcludedDirs[name]; ok {
+		return true, false
 	}
 	if outputRel != "" && (rel == outputRel || strings.HasPrefix(rel, outputRel+"/")) {
-		return true
+		return true, false
 	}
 	for excluded := range excludes {
 		if rel == excluded || strings.HasPrefix(rel, excluded+"/") {
+			return true, false
+		}
+	}
+	if _, ok := defaultExcludedDirs[name]; ok {
+		if explicitScopeTargets(rel, includes) {
+			return false, true
+		}
+		return true, false
+	}
+	return false, false
+}
+
+func explicitScopeTargets(dir string, includes []string) bool {
+	for _, include := range includes {
+		if include == dir || strings.HasPrefix(include, dir+"/") {
 			return true
 		}
 	}
 	return false
 }
 
-func inspectFile(path string) (lines int, binary bool, err error) {
+func exactlyIncluded(path string, includes []string) bool {
+	return slices.Contains(includes, path)
+}
+
+func underForcedDir(path string, forcedDirs map[string]struct{}) bool {
+	for dir := range forcedDirs {
+		if strings.HasPrefix(path, dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func inspectFile(path string) (lines int, binary bool, digest string, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, false, err
+		return 0, false, "", err
 	}
 	defer func() {
 		if closeErr := f.Close(); err == nil {
@@ -183,26 +275,44 @@ func inspectFile(path string) (lines int, binary bool, err error) {
 	reader := bufio.NewReader(f)
 	prefix, err := reader.Peek(8192)
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, bufio.ErrBufferFull) {
-		return 0, false, err
-	}
-	if bytes.IndexByte(prefix, 0) >= 0 {
-		return 0, true, nil
+		return 0, false, "", err
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return 0, false, err
+		return 0, false, "", err
 	}
 	content, err := io.ReadAll(f)
 	if err != nil {
-		return 0, false, err
+		return 0, false, "", err
+	}
+	digest = fmt.Sprintf("%x", sha256.Sum256(content))
+	if bytes.IndexByte(prefix, 0) >= 0 {
+		return 0, true, digest, nil
 	}
 	if len(content) == 0 {
-		return 0, false, nil
+		return 0, false, digest, nil
 	}
 	lines = bytes.Count(content, []byte{'\n'})
 	if content[len(content)-1] != '\n' {
 		lines++
 	}
-	return lines, false, nil
+	return lines, false, digest, nil
+}
+
+func digestFile(path string) (digest string, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 func detectLanguage(path string) string {

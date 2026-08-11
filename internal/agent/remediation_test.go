@@ -2,11 +2,30 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
+
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 
 	"security-scanner/internal/remediation"
 	"security-scanner/internal/scan"
 )
+
+type failingReviewModel struct{}
+
+func (failingReviewModel) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
+	return nil, errors.New("large review reached model")
+}
+
+func (failingReviewModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("large review reached model")
+}
+
+func (failingReviewModel) WithTools([]*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	return failingReviewModel{}, nil
+}
 
 func TestValidationStoreAcceptsGroundedTrueAndFalsePositiveVerdicts(t *testing.T) {
 	inventory := &scan.Inventory{Files: []scan.File{{Path: "app.go", Lines: 20, Reviewable: true}}}
@@ -40,5 +59,13 @@ func TestPatchStoreAcceptsBoundedProposal(t *testing.T) {
 	stored, err := store.get()
 	if err != nil || len(stored.Changes) != 1 {
 		t.Fatalf("stored proposal = %#v, err = %v", stored, err)
+	}
+}
+
+func TestReviewerAcceptsInputAboveLegacyLimit(t *testing.T) {
+	reviewer := NewEinoReviewer(failingReviewModel{}, Config{MaxIterations: 1}, &scan.Inventory{Root: t.TempDir()})
+	_, err := reviewer.Validate(context.Background(), strings.Repeat("evidence ", 10_000))
+	if err == nil || !strings.Contains(err.Error(), "large review reached model") {
+		t.Fatalf("large review did not reach model: %v", err)
 	}
 }

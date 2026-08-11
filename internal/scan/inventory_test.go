@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -89,17 +90,49 @@ func TestBuildInventoryHonorsNestedGitignoreRules(t *testing.T) {
 	}
 }
 
-func TestBuildInventoryDoesNotIncludeExplicitlySelectedIgnoredFile(t *testing.T) {
+func TestBuildInventoryIncludesExplicitlySelectedIgnoredPaths(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, ".gitignore", []byte("secret.env\n"))
+	writeTestFile(t, root, ".gitignore", []byte("secret.env\nignored.env\nsrc/ignored.env\nvendor/\n"))
 	writeTestFile(t, root, "secret.env", []byte("ignored\n"))
+	writeTestFile(t, root, "ignored.env", []byte("ignored\n"))
+	writeTestFile(t, root, "src/app.go", []byte("package app\n"))
+	writeTestFile(t, root, "src/ignored.env", []byte("ignored within broad selected scope\n"))
+	writeTestFile(t, root, "vendor/dependency.go", []byte("package dependency\n"))
+	writeTestFile(t, root, "vendor/private.env", []byte("ignored within selected dependency scope\n"))
+	writeTestFile(t, root, ".git/config", []byte("protected metadata\n"))
 
-	inv, err := BuildInventory(root, InventoryOptions{Includes: []string{"secret.env"}})
+	inv, err := BuildInventory(root, InventoryOptions{Includes: []string{".git", "secret.env", "src", "vendor"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inv.Files) != 0 {
-		t.Fatalf("ignored selection produced files: %#v", inv.Files)
+	paths := make([]string, 0, len(inv.Files))
+	for _, file := range inv.Files {
+		paths = append(paths, file.Path)
+	}
+	want := []string{"secret.env", "src/app.go", "vendor/dependency.go", "vendor/private.env"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths = %#v, want %#v", paths, want)
+	}
+}
+
+func TestVerifyInventoryDetectsContentAndScopeChanges(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "app.go", []byte("package old\n"))
+	inv, err := BuildInventory(root, InventoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyInventory(inv); err != nil {
+		t.Fatalf("unchanged inventory failed verification: %v", err)
+	}
+	writeTestFile(t, root, "app.go", []byte("package new\n"))
+	if err := VerifyInventory(inv); err == nil || !strings.Contains(err.Error(), "scan target changed") {
+		t.Fatalf("content drift was not detected: %v", err)
+	}
+	writeTestFile(t, root, "app.go", []byte("package old\n"))
+	writeTestFile(t, root, "new.go", []byte("package added\n"))
+	if err := VerifyInventory(inv); err == nil || !strings.Contains(err.Error(), "scan target changed") {
+		t.Fatalf("scope drift was not detected: %v", err)
 	}
 }
 

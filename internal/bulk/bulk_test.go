@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,6 +52,53 @@ func TestParseInputRejectsEmptyTarget(t *testing.T) {
 	}
 	if _, err := ParseInput(path); err == nil {
 		t.Fatal("expected empty repository to be rejected")
+	}
+}
+
+func TestParseInputAcceptsFlexibleCSVColumns(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	path := filepath.Join(t.TempDir(), "repos.csv")
+	data := "\ufeffcontext,repository,id\n" +
+		"internet-facing," + quoteCSV(first) + ",first\n" +
+		"internal," + quoteCSV(second) + ",second\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := ParseInput(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contexts := make(map[string]string, len(jobs))
+	for _, job := range jobs {
+		contexts[job.Target] = job.Context
+	}
+	if contexts[first] != "internet-facing" || contexts[second] != "internal" {
+		t.Fatalf("unexpected CSV jobs: %#v", jobs)
+	}
+}
+
+func TestParseInputRejectsCSVWithoutRepositoryColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repos.csv")
+	if err := os.WriteFile(path, []byte("id,context\nfirst,internal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseInput(path); err == nil || !strings.Contains(err.Error(), "target or repository column") {
+		t.Fatalf("unexpected CSV error: %v", err)
+	}
+}
+
+func TestParseInputDoesNotMisclassifySingleColumnNewlineList(t *testing.T) {
+	parent := t.TempDir()
+	target := filepath.Join(parent, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "repos.txt")
+	if err := os.WriteFile(path, []byte("target\n"+target+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseInput(path); err == nil || !strings.Contains(err.Error(), `resolve repository "target"`) {
+		t.Fatalf("single-column newline list was interpreted as CSV: %v", err)
 	}
 }
 
@@ -132,6 +180,53 @@ func TestRunBoundsConcurrencyRetriesAndResumes(t *testing.T) {
 	}
 	if calls.Load() != before {
 		t.Fatal("completed receipt entries were rerun")
+	}
+}
+
+func TestRunRejectsConcurrentSupervisorForReceipt(t *testing.T) {
+	jobs, err := BuildJobs([]string{t.TempDir()}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	ctx := t.Context()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	firstDone := make(chan error, 1)
+	go func() {
+		_, runErr := Run(ctx, jobs, func(context.Context, Job) (string, error) {
+			close(started)
+			select {
+			case <-release:
+				return "scan-first", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}, Config{Workers: 1, ReceiptPath: receiptPath})
+		firstDone <- runErr
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first bulk supervisor did not start")
+	}
+
+	if _, err := Run(context.Background(), jobs, func(context.Context, Job) (string, error) {
+		return "scan-second", nil
+	}, Config{Workers: 1, ReceiptPath: receiptPath}); err == nil || !strings.Contains(err.Error(), "bulk supervisor is already running") {
+		t.Fatalf("concurrent supervisor error = %v", err)
+	}
+	unblock()
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), jobs, func(context.Context, Job) (string, error) {
+		return "scan-resumed", nil
+	}, Config{Workers: 1, Resume: true, ReceiptPath: receiptPath}); err != nil {
+		t.Fatalf("released supervisor lock was not reusable: %v", err)
 	}
 }
 
@@ -290,4 +385,8 @@ func quote(value string) string {
 		result.WriteString(string(char))
 	}
 	return result.String() + `"`
+}
+
+func quoteCSV(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }

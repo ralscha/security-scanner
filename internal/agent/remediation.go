@@ -17,8 +17,6 @@ import (
 	"security-scanner/internal/scan"
 )
 
-const maxReviewInputBytes = 64 * 1024
-
 type EinoReviewer struct {
 	chatModel model.BaseChatModel
 	config    Config
@@ -60,9 +58,6 @@ func (r *EinoReviewer) run(ctx context.Context, name, instruction, input string,
 	input = cleanReviewInput(input)
 	if input == "" {
 		return fmt.Errorf("review input is required")
-	}
-	if len(input) > maxReviewInputBytes {
-		return fmt.Errorf("review input exceeds %d bytes", maxReviewInputBytes)
 	}
 	iterations := r.config.MaxIterations
 	if iterations <= 0 {

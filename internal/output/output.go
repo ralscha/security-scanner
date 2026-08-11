@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"security-scanner/internal/trustedexec"
 )
 
 // Guard pins a private directory to the filesystem object that was prepared.
@@ -418,7 +420,16 @@ func Prepare(destination string, archiveExisting bool, now time.Time) (string, e
 }
 
 func worktreeRoot(ctx context.Context, target string) string {
-	command := exec.CommandContext(ctx, "git", "-C", target, "rev-parse", "--show-toplevel")
+	git, err := trustedexec.Resolve("git", target)
+	if err != nil {
+		return target
+	}
+	environment := trustedexec.WithoutVariables(git.Env,
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+		"GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS",
+	)
+	command := exec.CommandContext(ctx, git.Path, "-C", target, "rev-parse", "--show-toplevel")
+	command.Env = append(environment, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	output, err := command.Output()
 	if err != nil {
 		return target

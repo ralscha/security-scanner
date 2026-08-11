@@ -62,11 +62,14 @@ type File struct {
 	Language   string `json:"language,omitempty"`
 	Reviewable bool   `json:"reviewable"`
 	SkipReason string `json:"skip_reason,omitempty"`
+	digest     string
 }
 
 type Inventory struct {
-	Root  string `json:"root"`
-	Files []File `json:"files"`
+	Root          string `json:"root"`
+	Files         []File `json:"files"`
+	options       InventoryOptions
+	snapshotReady bool
 }
 
 type CoverageFile struct {

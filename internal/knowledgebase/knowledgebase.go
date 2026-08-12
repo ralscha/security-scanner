@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -35,6 +36,7 @@ type Document struct {
 	SHA256     string `json:"sha256"`
 	Text       string `json:"-"`
 	identity   os.FileInfo
+	fileID     string
 }
 
 type Prepared struct {
@@ -196,7 +198,7 @@ func Verify(prepared *Prepared) error {
 	for i := range current.Documents {
 		left, right := current.Documents[i], prepared.Documents[i]
 		if left.ID != right.ID || left.SHA256 != right.SHA256 || left.Size != right.Size || left.Text != right.Text ||
-			left.identity == nil || right.identity == nil || !os.SameFile(left.identity, right.identity) {
+			!sameDocumentFile(left, right) {
 			return &DriftError{Err: fmt.Errorf("knowledge base changed after inventory: %s", right.Name)}
 		}
 	}
@@ -209,7 +211,7 @@ func VerifyDocument(document Document) error {
 		return err
 	}
 	if current.ID != document.ID || current.Size != document.Size || current.SHA256 != document.SHA256 || current.Text != document.Text ||
-		current.identity == nil || document.identity == nil || !os.SameFile(current.identity, document.identity) {
+		!sameDocumentFile(current, document) {
 		return &DriftError{Err: fmt.Errorf("knowledge-base document changed after inventory: %s", document.Name)}
 	}
 	return nil
@@ -226,15 +228,36 @@ func readDocument(path string, maxBytes int64) (Document, error) {
 	if before.Size() > maxBytes {
 		return Document{}, fmt.Errorf("knowledge-base document exceeds maximum size %d bytes: %s", maxBytes, path)
 	}
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return Document{}, fmt.Errorf("read knowledge-base document %s: %w", path, err)
 	}
-	after, err := os.Lstat(path)
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return Document{}, fmt.Errorf("inspect opened knowledge-base document %s: %w", path, err)
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return Document{}, fmt.Errorf("knowledge-base document changed while opening: %s", path)
+	}
+	fileID, err := fileIdentity(file)
+	if err != nil {
+		return Document{}, fmt.Errorf("identify knowledge-base document %s: %w", path, err)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return Document{}, fmt.Errorf("read knowledge-base document %s: %w", path, err)
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return Document{}, fmt.Errorf("reinspect opened knowledge-base document %s: %w", path, err)
+	}
+	namedAfter, err := os.Lstat(path)
 	if err != nil {
 		return Document{}, fmt.Errorf("reinspect knowledge-base document %s: %w", path, err)
 	}
-	if !os.SameFile(before, after) || after.Size() != int64(len(data)) {
+	if namedAfter.Mode()&os.ModeSymlink != 0 || !namedAfter.Mode().IsRegular() ||
+		!os.SameFile(opened, after) || !os.SameFile(after, namedAfter) || after.Size() != int64(len(data)) {
 		return Document{}, fmt.Errorf("knowledge-base document changed while reading: %s", path)
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
@@ -247,8 +270,13 @@ func readDocument(path string, maxBytes int64) (Document, error) {
 	identity := sha256.Sum256([]byte(pathKey(path)))
 	return Document{
 		ID: "kb-" + fmt.Sprintf("%x", identity[:8]), SourcePath: path, Name: filepath.Base(path),
-		Size: int64(len(data)), SHA256: fmt.Sprintf("%x", digest[:]), Text: strings.ReplaceAll(string(data), "\r\n", "\n"), identity: after,
+		Size: int64(len(data)), SHA256: fmt.Sprintf("%x", digest[:]), Text: strings.ReplaceAll(string(data), "\r\n", "\n"),
+		identity: after, fileID: fileID,
 	}, nil
+}
+
+func sameDocumentFile(left, right Document) bool {
+	return left.identity != nil && right.identity != nil && os.SameFile(left.identity, right.identity) && left.fileID == right.fileID
 }
 
 func resolveRoot(path string) (string, error) {

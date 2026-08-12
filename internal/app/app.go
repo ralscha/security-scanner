@@ -326,7 +326,7 @@ func Run(ctx context.Context, opts Options) (*scan.Result, error) {
 		}
 		activity.recordEvent(scan.ActivityEvent{
 			Timestamp: time.Now(), Event: "analysis.attempt.failed", Phase: "analysis", Attempt: attempt,
-			ErrorClass: string(primaryClass), Retryable: boolPointer(retryable), Message: err.Error(),
+			ErrorClass: string(primaryClass), Retryable: new(retryable), Message: err.Error(),
 		})
 		if ctx.Err() != nil || !retryable || attempt == opts.MaxAnalysisAttempts {
 			break
@@ -665,8 +665,6 @@ func eligibleFailurePostScan(class recovery.Class, ctx context.Context) bool {
 		return true
 	}
 }
-
-func boolPointer(value bool) *bool { return &value }
 
 func durationString(duration time.Duration) string {
 	if duration <= 0 {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"sort"
 	"strings"
@@ -42,9 +43,7 @@ func (t *KnowledgeAccessTracker) Snapshot() map[string]int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	result := make(map[string]int, len(t.access))
-	for id, count := range t.access {
-		result[id] = count
-	}
+	maps.Copy(result, t.access)
 	return result
 }
 

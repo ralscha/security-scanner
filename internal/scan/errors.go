@@ -1,5 +1,7 @@
 package scan
 
+import "strings"
+
 import "fmt"
 
 type InventoryDriftError struct{ Err error }
@@ -14,12 +16,12 @@ func (e *InvalidSubmissionError) Error() string {
 }
 
 func joinProblems(problems []string) string {
-	result := ""
+	var result strings.Builder
 	for index, problem := range problems {
 		if index > 0 {
-			result += "; "
+			result.WriteString("; ")
 		}
-		result += problem
+		result.WriteString(problem)
 	}
-	return result
+	return result.String()
 }

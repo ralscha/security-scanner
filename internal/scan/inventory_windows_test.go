@@ -3,10 +3,12 @@
 package scan
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestBuildInventorySkipsWindowsJunction(t *testing.T) {
@@ -14,7 +16,12 @@ func TestBuildInventorySkipsWindowsJunction(t *testing.T) {
 	outside := t.TempDir()
 	writeTestFile(t, outside, "outside.go", []byte("package outside\n"))
 	junction := filepath.Join(root, "linked")
-	if output, err := exec.Command("cmd", "/c", "mklink", "/J", junction, outside).CombinedOutput(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if output, err := exec.CommandContext(ctx, "cmd", "/c", "mklink", "/J", junction, outside).CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			t.Fatalf("create test junction timed out: %v", ctx.Err())
+		}
 		t.Skipf("create test junction: %v: %s", err, output)
 	}
 	t.Cleanup(func() { _ = os.Remove(junction) })

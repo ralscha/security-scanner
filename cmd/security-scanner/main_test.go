@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"security-scanner/internal/history"
 	"security-scanner/internal/scan"
@@ -394,7 +395,7 @@ func TestHelpListsRoadmapCommands(t *testing.T) {
 	if code := run([]string{"help"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	for _, command := range []string{"scan preflight", "bulk-scan", "scans <list|show|rerun|match|compare>", "findings false-positive", "validate", "patch"} {
+	for _, command := range []string{"scan preflight", "bulk-scan", "scans <list|show|logs|rerun|match|compare>", "findings list", "findings false-positive", "validate", "patch"} {
 		if !strings.Contains(stdout.String(), command) {
 			t.Errorf("help does not contain %q:\n%s", command, stdout.String())
 		}
@@ -416,6 +417,29 @@ func TestPreflightJSONDoesNotCallModel(t *testing.T) {
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || !result.OK {
 		t.Fatalf("unexpected preflight: %s, %v", stdout.String(), err)
+	}
+}
+
+func TestDryRunAndPreflightPrepareKnowledgeBaseWithoutModelCalls(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kb := filepath.Join(t.TempDir(), "guide.md")
+	if err := os.WriteFile(kb, []byte("Use least privilege.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"scan", "--dry-run", "--target", root, "--provider", "ollama", "--model", "not-installed", "--auth", "none", "--knowledge-base", kb},
+		{"scan", "preflight", "--target", root, "--provider", "ollama", "--model", "not-installed", "--auth", "none", "--knowledge-base", kb, "--json"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != 0 {
+			t.Fatalf("%v exit %d: %s", args, code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "knowledge") {
+			t.Fatalf("knowledge-base metadata missing from %v: %s", args, stdout.String())
+		}
 	}
 }
 
@@ -468,6 +492,81 @@ func TestFindingsFalsePositiveRequiresReason(t *testing.T) {
 	code := run([]string{"findings", "false-positive", "scan-1:F-ABC"}, &stdout, &stderr)
 	if code != 2 || !bytes.Contains(stderr.Bytes(), []byte("requires --reason")) {
 		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+}
+
+func TestFindingsListShowsSavedRepositoryFindings(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("SECURITY_SCANNER_STATE_DIR", state)
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "app.go"), []byte("package app\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := scan.BuildInventory(target, scan.InventoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := scan.Finalize(inventory, nil, scan.Submission{
+		ThreatModel: "Untrusted callers can reach the application.",
+		Findings: []scan.FindingDraft{{
+			Title: "Missing authorization", Severity: scan.SeverityHigh, Confidence: scan.ConfidenceHigh,
+			CWEIDs: []string{"CWE-862"}, Summary: "The operation is not authorized.", Impact: "Unauthorized access.",
+			Evidence: "app.go exposes the operation.", Remediation: "Add authorization.", AttackPath: "A caller invokes the operation.",
+			Locations: []scan.Location{{Path: "app.go", StartLine: 1, Role: "root_control"}},
+		}},
+	}, scan.FinalizeOptions{ScanID: scan.AllocateScanID(target, time.Unix(100, 0)), OutputDir: filepath.Join(state, "scan"), Provider: "test", Model: "test", StartedAt: time.Unix(100, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := history.DefaultStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Add(result); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"findings", "list", "--target", target, "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	var listed struct {
+		Repository string                      `json:"repository"`
+		Findings   []history.RepositoryFinding `json:"findings"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if listed.Repository != target || len(listed.Findings) != 1 || listed.Findings[0].Title != "Missing authorization" || !listed.Findings[0].ConfirmedInLatestScan {
+		t.Fatalf("unexpected findings list: %s", stdout.String())
+	}
+	prefix := result.Manifest.ScanID[:len(result.Manifest.ScanID)-4]
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"scans", "logs", prefix, "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("logs exit %d: %s", code, stderr.String())
+	}
+	var log history.ScanLog
+	if err := json.Unmarshal(stdout.Bytes(), &log); err != nil {
+		t.Fatal(err)
+	}
+	if log.ScanID != result.Manifest.ScanID || len(log.Events) != 1 || log.Events[0].Event != "scan.completed" {
+		t.Fatalf("unexpected saved scan log: %s", stdout.String())
+	}
+	resolved, resolvedTarget, err := resolveReviewInput(prefix+":"+result.Findings.Findings[0].ID, "")
+	if err != nil || resolvedTarget != target || !strings.Contains(resolved, "Missing authorization") {
+		t.Fatalf("occurrence prefix did not resolve: target=%q input=%q err=%v", resolvedTarget, resolved, err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"findings", "false-positive", prefix + ":" + result.Findings.Findings[0].ID, "--reason", "covered elsewhere"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("triage exit %d: %s", code, stderr.String())
+	}
+	var decision struct {
+		OccurrenceID string `json:"occurrence_id"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &decision); err != nil || decision.OccurrenceID != result.Manifest.ScanID+":"+result.Findings.Findings[0].ID {
+		t.Fatalf("triage did not canonicalize occurrence: %s, %v", stdout.String(), err)
 	}
 }
 

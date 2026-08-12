@@ -19,6 +19,7 @@ import (
 	"github.com/gofrs/flock"
 
 	outputpolicy "security-scanner/internal/output"
+	"security-scanner/internal/recovery"
 	"security-scanner/internal/redact"
 )
 
@@ -30,56 +31,66 @@ type Job struct {
 }
 
 type Outcome struct {
-	ScanID       string `json:"scan_id,omitempty"`
-	OutputDir    string `json:"output_dir,omitempty"`
-	Status       string `json:"status"`
-	FindingCount int    `json:"finding_count,omitempty"`
+	ScanID           string `json:"scan_id,omitempty"`
+	OutputDir        string `json:"output_dir,omitempty"`
+	Status           string `json:"status"`
+	FindingCount     int    `json:"finding_count,omitempty"`
+	AnalysisAttempts int    `json:"analysis_attempts,omitempty"`
 }
 
 type JobReceipt struct {
 	Job
-	Status      string    `json:"status"`
-	ScanID      string    `json:"scan_id,omitempty"`
-	Attempts    int       `json:"attempts"`
-	Error       string    `json:"error,omitempty"`
-	StartedAt   time.Time `json:"started_at,omitzero"`
-	CompletedAt time.Time `json:"completed_at,omitzero"`
-	Cost        float64   `json:"estimated_cost,omitempty"`
-	Outcome     Outcome   `json:"outcome,omitzero"`
+	Status                   string    `json:"status"`
+	ScanID                   string    `json:"scan_id,omitempty"`
+	Attempts                 int       `json:"attempts"`
+	OuterJobMaxAttempts      int       `json:"outer_job_max_attempts,omitempty"`
+	InnerAnalysisMaxAttempts int       `json:"inner_analysis_max_attempts,omitempty"`
+	InnerAnalysisAttempts    int       `json:"inner_analysis_attempts,omitempty"`
+	Error                    string    `json:"error,omitempty"`
+	StartedAt                time.Time `json:"started_at,omitzero"`
+	CompletedAt              time.Time `json:"completed_at,omitzero"`
+	Cost                     float64   `json:"estimated_cost,omitempty"`
+	Outcome                  Outcome   `json:"outcome,omitzero"`
 }
 
 type Entry = JobReceipt
 
 type Receipt struct {
-	SchemaVersion string       `json:"schema_version"`
-	Status        string       `json:"status"`
-	StartedAt     time.Time    `json:"started_at"`
-	UpdatedAt     time.Time    `json:"updated_at"`
-	ReservedCost  float64      `json:"reserved_cost,omitempty"`
-	Jobs          []JobReceipt `json:"jobs"`
-	Entries       []Entry      `json:"entries,omitempty"`
+	SchemaVersion            string       `json:"schema_version"`
+	Status                   string       `json:"status"`
+	StartedAt                time.Time    `json:"started_at"`
+	UpdatedAt                time.Time    `json:"updated_at"`
+	ReservedCost             float64      `json:"reserved_cost,omitempty"`
+	OuterJobMaxAttempts      int          `json:"outer_job_max_attempts,omitempty"`
+	InnerAnalysisMaxAttempts int          `json:"inner_analysis_max_attempts,omitempty"`
+	Jobs                     []JobReceipt `json:"jobs"`
+	Entries                  []Entry      `json:"entries,omitempty"`
 }
 
 type Event struct {
-	Time    time.Time `json:"time"`
-	Type    string    `json:"type"`
-	JobID   string    `json:"job_id,omitempty"`
-	Status  string    `json:"status,omitempty"`
-	Attempt int       `json:"attempt,omitempty"`
-	Message string    `json:"message,omitempty"`
+	Time                     time.Time `json:"time"`
+	Type                     string    `json:"type"`
+	JobID                    string    `json:"job_id,omitempty"`
+	Status                   string    `json:"status,omitempty"`
+	Attempt                  int       `json:"attempt,omitempty"`
+	OuterJobMaxAttempts      int       `json:"outer_job_max_attempts,omitempty"`
+	InnerAnalysisMaxAttempts int       `json:"inner_analysis_max_attempts,omitempty"`
+	InnerAnalysisAttempts    int       `json:"inner_analysis_attempts,omitempty"`
+	Message                  string    `json:"message,omitempty"`
 }
 
 type Config struct {
-	Workers       int
-	MaxRetries    int
-	Retries       int
-	RetryDelay    time.Duration
-	MaxBudget     float64
-	EstimatedCost float64
-	Resume        bool
-	ReceiptPath   string
-	OnEvent       func(Event)
-	Progress      func(Entry)
+	Workers                  int
+	MaxRetries               int
+	Retries                  int
+	RetryDelay               time.Duration
+	MaxBudget                float64
+	EstimatedCost            float64
+	Resume                   bool
+	ReceiptPath              string
+	OnEvent                  func(Event)
+	Progress                 func(Entry)
+	InnerAnalysisMaxAttempts int
 }
 
 type Runner func(context.Context, Job) (string, error)
@@ -330,6 +341,9 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 	if config.MaxRetries < 0 || config.MaxRetries > 10 {
 		return Receipt{}, fmt.Errorf("max retries must be between 0 and 10")
 	}
+	if config.InnerAnalysisMaxAttempts <= 0 {
+		config.InnerAnalysisMaxAttempts = 1
+	}
 	if config.RetryDelay <= 0 {
 		config.RetryDelay = time.Second
 	}
@@ -350,6 +364,8 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 	}
 	emit := func(event Event) {
 		event.Time = time.Now().UTC()
+		event.OuterJobMaxAttempts = config.MaxRetries + 1
+		event.InnerAnalysisMaxAttempts = config.InnerAnalysisMaxAttempts
 		if config.OnEvent != nil {
 			config.OnEvent(event)
 		}
@@ -374,6 +390,7 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 				entry.Cost = config.EstimatedCost
 				persistLocked()
 				job := entry.Job
+				innerAttempts := entry.InnerAnalysisAttempts
 				if config.Progress != nil {
 					config.Progress(*entry)
 				}
@@ -384,11 +401,12 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 				var runErr error
 				for attempt := 1; attempt <= config.MaxRetries+1; attempt++ {
 					scanID, outcome, runErr = runner(ctx, job)
+					innerAttempts += outcome.AnalysisAttempts
 					mu.Lock()
 					receipt.Jobs[index].Attempts++
 					persistLocked()
 					mu.Unlock()
-					emit(Event{Type: "job_attempt", JobID: job.ID, Attempt: attempt})
+					emit(Event{Type: "job_attempt", JobID: job.ID, Attempt: attempt, InnerAnalysisAttempts: outcome.AnalysisAttempts})
 					if runErr == nil || !Transient(runErr) || attempt > config.MaxRetries || ctx.Err() != nil {
 						break
 					}
@@ -410,6 +428,8 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 				if outcome.OutputDir == "" {
 					outcome.OutputDir = job.OutputDir
 				}
+				outcome.AnalysisAttempts = innerAttempts
+				entry.InnerAnalysisAttempts = innerAttempts
 				entry.ScanID, entry.CompletedAt = outcome.ScanID, time.Now().UTC()
 				entry.Outcome = outcome
 				if runErr == nil {
@@ -512,7 +532,7 @@ func acquireSupervisorLock(receiptPath string) (*flock.Flock, error) {
 
 func initialReceipt(jobs []Job, config Config) (Receipt, error) {
 	now := time.Now().UTC()
-	receipt := Receipt{SchemaVersion: "1", Status: "running", StartedAt: now, UpdatedAt: now, Jobs: make([]JobReceipt, 0, len(jobs))}
+	receipt := Receipt{SchemaVersion: "1", Status: "running", StartedAt: now, UpdatedAt: now, Jobs: make([]JobReceipt, 0, len(jobs)), OuterJobMaxAttempts: config.MaxRetries + 1, InnerAnalysisMaxAttempts: config.InnerAnalysisMaxAttempts}
 	previous := make(map[string]JobReceipt)
 	if config.Resume {
 		guard, err := outputpolicy.EnsurePrivateDir(filepath.Dir(config.ReceiptPath))
@@ -539,6 +559,8 @@ func initialReceipt(jobs []Job, config Config) (Receipt, error) {
 	for _, job := range jobs {
 		entry := previous[job.ID]
 		entry.Job = job
+		entry.OuterJobMaxAttempts = config.MaxRetries + 1
+		entry.InnerAnalysisMaxAttempts = config.InnerAnalysisMaxAttempts
 		if legacyIncompleteOutcome(entry) {
 			entry.Status, entry.Error = StatusCompletedWithGaps, ""
 			entry.Outcome.Status = StatusCompletedWithGaps
@@ -634,6 +656,10 @@ func legacyIncompleteOutcome(entry JobReceipt) bool {
 func Transient(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
+	}
+	var classified *recovery.Error
+	if errors.As(err, &classified) {
+		return classified.Retryable
 	}
 	message := strings.ToLower(err.Error())
 	for _, marker := range []string{"429", "500", "502", "503", "504", "timeout", "temporarily unavailable", "connection reset", "connection refused", "rate limit"} {

@@ -63,6 +63,26 @@ func TestBuildInventoryIncludesSelectedPaths(t *testing.T) {
 	}
 }
 
+func TestBuildInventoryExcludesNestedGitMetadataFiles(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, ".git", []byte("gitdir: C:/worktrees/root\n"))
+	writeTestFile(t, root, "app.go", []byte("package app\n"))
+	writeTestFile(t, root, "nested/.git", []byte("gitdir: ../../.git/modules/nested\n"))
+	writeTestFile(t, root, "nested/module.go", []byte("package nested\n"))
+
+	inv, err := BuildInventory(root, InventoryOptions{Includes: []string{".git", "app.go", "nested"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, len(inv.Files))
+	for _, file := range inv.Files {
+		paths = append(paths, file.Path)
+	}
+	if want := []string{"app.go", "nested/module.go"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths = %#v, want %#v", paths, want)
+	}
+}
+
 func TestBuildInventoryHonorsNestedGitignoreRules(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, ".gitignore", []byte("*.log\ncache/\ngenerated/*\n!generated/keep.go\n"))

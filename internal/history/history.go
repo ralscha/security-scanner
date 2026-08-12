@@ -1,8 +1,11 @@
 package history
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,6 +15,7 @@ import (
 
 	"security-scanner/internal/output"
 	"security-scanner/internal/scan"
+	"security-scanner/internal/triage"
 )
 
 const schemaVersion = "1"
@@ -30,11 +34,29 @@ type Record struct {
 	TargetRef    string                    `json:"target_ref,omitempty"`
 	TargetPaths  []string                  `json:"target_paths,omitempty"`
 	LaunchConfig *scan.LaunchConfiguration `json:"launch_configuration,omitempty"`
+	ErrorClass   string                    `json:"error_class,omitempty"`
 }
 
 type Index struct {
 	SchemaVersion string   `json:"schema_version"`
 	Scans         []Record `json:"scans"`
+}
+
+type RepositoryFinding struct {
+	scan.Finding
+	OccurrenceID          string    `json:"occurrence_id"`
+	ScanID                string    `json:"scan_id"`
+	Target                string    `json:"target"`
+	Status                string    `json:"status"`
+	ConfirmedInLatestScan bool      `json:"confirmed_in_latest_scan"`
+	KnownSince            time.Time `json:"known_since"`
+	KnownScanIDs          []string  `json:"known_scan_ids"`
+	OccurrenceCount       int       `json:"occurrence_count"`
+}
+
+type ScanLog struct {
+	ScanID string               `json:"scan_id"`
+	Events []scan.ActivityEvent `json:"events"`
 }
 
 type Store struct {
@@ -57,12 +79,6 @@ func (s *Store) Add(result *scan.Result) error {
 	if result == nil {
 		return fmt.Errorf("scan result is required")
 	}
-	storeMu.Lock()
-	defer storeMu.Unlock()
-	index, err := s.load()
-	if err != nil {
-		return err
-	}
 	record := Record{
 		ScanID: result.Manifest.ScanID, Target: result.Manifest.Target, OutputDir: result.OutDir,
 		Status: result.Manifest.Status, Provider: result.Manifest.Provider, Model: result.Manifest.Model,
@@ -71,6 +87,23 @@ func (s *Store) Add(result *scan.Result) error {
 		TargetRef: result.Manifest.TargetRef, TargetPaths: append([]string(nil), result.Manifest.TargetPaths...),
 		LaunchConfig: cloneLaunchConfiguration(result.Manifest.LaunchConfig),
 	}
+	return s.Upsert(record)
+}
+
+// Upsert registers an in-progress or failed session, or updates it with a
+// canonical result once finalization succeeds.
+func (s *Store) Upsert(record Record) error {
+	if strings.TrimSpace(record.ScanID) == "" || strings.TrimSpace(record.Target) == "" {
+		return fmt.Errorf("history record scan ID and target are required")
+	}
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	index, err := s.load()
+	if err != nil {
+		return err
+	}
+	record.TargetPaths = append([]string(nil), record.TargetPaths...)
+	record.LaunchConfig = cloneLaunchConfiguration(record.LaunchConfig)
 	replaced := false
 	for i := range index.Scans {
 		if index.Scans[i].ScanID == record.ScanID {
@@ -92,6 +125,7 @@ func cloneLaunchConfiguration(config *scan.LaunchConfiguration) *scan.LaunchConf
 	}
 	clone := *config
 	clone.Excludes = append([]string(nil), config.Excludes...)
+	clone.KnowledgeBasePaths = append([]string(nil), config.KnowledgeBasePaths...)
 	return &clone
 }
 
@@ -119,6 +153,10 @@ func (s *Store) List(target string) ([]Record, error) {
 }
 
 func (s *Store) Get(scanID string) (Record, error) {
+	scanID = strings.TrimSpace(scanID)
+	if scanID == "" {
+		return Record{}, fmt.Errorf("scan ID is required")
+	}
 	records, err := s.List("")
 	if err != nil {
 		return Record{}, err
@@ -128,7 +166,125 @@ func (s *Store) Get(scanID string) (Record, error) {
 			return record, nil
 		}
 	}
+	matches := make([]Record, 0, 1)
+	for _, record := range records {
+		if strings.HasPrefix(record.ScanID, scanID) {
+			matches = append(matches, record)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		ids := make([]string, len(matches))
+		for index, match := range matches {
+			ids[index] = match.ScanID
+		}
+		sort.Strings(ids)
+		return Record{}, fmt.Errorf("scan ID prefix %q is ambiguous; matches: %s", scanID, strings.Join(ids, ", "))
+	}
 	return Record{}, fmt.Errorf("scan %q was not found", scanID)
+}
+
+func (s *Store) RepositoryFindings(target string, decisions []triage.Decision) ([]RepositoryFinding, error) {
+	records, err := s.List(target)
+	if err != nil {
+		return nil, err
+	}
+	return repositoryFindings(records, decisions, LoadResult)
+}
+
+func repositoryFindings(records []Record, decisions []triage.Decision, load func(Record) (*scan.Result, error)) ([]RepositoryFinding, error) {
+	completed := make([]Record, 0, len(records))
+	for _, record := range records {
+		if record.Status == "" || record.Status == "completed" || record.Status == "completed_with_gaps" {
+			completed = append(completed, record)
+		}
+	}
+	if len(completed) == 0 {
+		return []RepositoryFinding{}, nil
+	}
+	ordered := append([]Record(nil), completed...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].StartedAt.Equal(ordered[j].StartedAt) {
+			return ordered[i].ScanID < ordered[j].ScanID
+		}
+		return ordered[i].StartedAt.Before(ordered[j].StartedAt)
+	})
+	latestScanID := ordered[len(ordered)-1].ScanID
+	byIdentity := make(map[string]*RepositoryFinding)
+	identityByOccurrence := make(map[string]string)
+	for _, record := range ordered {
+		result, err := load(record)
+		if err != nil {
+			return nil, err
+		}
+		for _, finding := range result.Findings.Findings {
+			identity := finding.Fingerprint
+			if identity == "" {
+				identity = record.ScanID + "\x00" + finding.ID
+			}
+			occurrenceID := record.ScanID + ":" + finding.ID
+			current, ok := byIdentity[identity]
+			if !ok {
+				current = &RepositoryFinding{KnownSince: record.StartedAt, Status: "open", Target: record.Target}
+				byIdentity[identity] = current
+			}
+			current.Finding = finding
+			current.OccurrenceID = occurrenceID
+			current.ScanID = record.ScanID
+			current.ConfirmedInLatestScan = record.ScanID == latestScanID
+			current.KnownScanIDs = append(current.KnownScanIDs, record.ScanID)
+			current.OccurrenceCount++
+			identityByOccurrence[occurrenceID] = identity
+		}
+	}
+	dismissed := make(map[string]struct{})
+	for _, decision := range decisions {
+		if decision.Disposition != "false_positive" {
+			continue
+		}
+		if identity, ok := identityByOccurrence[decision.OccurrenceID]; ok {
+			dismissed[identity] = struct{}{}
+		}
+		if decision.Fingerprint == "" {
+			continue
+		}
+		for identity, finding := range byIdentity {
+			if identity == decision.Fingerprint && samePath(finding.Target, decision.Target) {
+				dismissed[identity] = struct{}{}
+			}
+		}
+	}
+	findings := make([]RepositoryFinding, 0, len(byIdentity)-len(dismissed))
+	for identity, finding := range byIdentity {
+		if _, ok := dismissed[identity]; !ok {
+			findings = append(findings, *finding)
+		}
+	}
+	sort.Slice(findings, func(i, j int) bool {
+		if findings[i].ConfirmedInLatestScan != findings[j].ConfirmedInLatestScan {
+			return findings[i].ConfirmedInLatestScan
+		}
+		if findings[i].Severity != findings[j].Severity {
+			return severityRank(findings[i].Severity) > severityRank(findings[j].Severity)
+		}
+		if findings[i].Title != findings[j].Title {
+			return findings[i].Title < findings[j].Title
+		}
+		return findings[i].Fingerprint < findings[j].Fingerprint
+	})
+	return findings, nil
+}
+
+func severityRank(severity scan.Severity) int {
+	return map[scan.Severity]int{
+		scan.SeverityCritical: 5,
+		scan.SeverityHigh:     4,
+		scan.SeverityMedium:   3,
+		scan.SeverityLow:      2,
+		scan.SeverityInfo:     1,
+	}[severity]
 }
 
 func (s *Store) load() (Index, error) {
@@ -137,7 +293,7 @@ func (s *Store) load() (Index, error) {
 		return Index{}, fmt.Errorf("prepare private history directory: %w", err)
 	}
 	data, err := output.ReadPrivateFile(guard, filepath.Base(s.path))
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		return Index{SchemaVersion: schemaVersion, Scans: []Record{}}, nil
 	}
 	if err != nil {
@@ -174,17 +330,37 @@ func samePath(left, right string) bool {
 
 func LoadResult(record Record) (*scan.Result, error) {
 	result := &scan.Result{OutDir: record.OutputDir}
+	if _, statErr := os.Lstat(record.OutputDir); os.IsNotExist(statErr) {
+		return nil, fmt.Errorf("saved scan %s output directory is unavailable; it may have been moved or deleted: %s", record.ScanID, record.OutputDir)
+	}
 	guard, err := output.OpenPrivateDir(record.OutputDir)
+	if os.IsNotExist(err) {
+		return nil, fmt.Errorf("saved scan %s output directory is unavailable; it may have been moved or deleted: %s", record.ScanID, record.OutputDir)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("validate private output for scan %s: %w", record.ScanID, err)
 	}
 	result.OutDir = guard.Path()
-	for name, destination := range map[string]any{
-		"scan-manifest.json": &result.Manifest,
-		"findings.json":      &result.Findings,
-		"coverage.json":      &result.Coverage,
-	} {
+	artifacts := []struct {
+		name        string
+		destination any
+	}{
+		{name: "scan-manifest.json", destination: &result.Manifest},
+		{name: "findings.json", destination: &result.Findings},
+		{name: "coverage.json", destination: &result.Coverage},
+	}
+	for _, artifact := range artifacts {
+		name, destination := artifact.name, artifact.destination
 		data, err := output.ReadPrivateFile(guard, name)
+		if err != nil {
+			_, statErr := os.Lstat(filepath.Join(guard.Path(), name))
+			if os.IsNotExist(statErr) {
+				return nil, fmt.Errorf("saved scan %s is missing required artifact %s; its output may be incomplete or damaged", record.ScanID, name)
+			}
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("saved scan %s is missing required artifact %s; its output may be incomplete or damaged", record.ScanID, name)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read %s for scan %s: %w", name, record.ScanID, err)
 		}
@@ -192,5 +368,62 @@ func LoadResult(record Record) (*scan.Result, error) {
 			return nil, fmt.Errorf("decode %s for scan %s: %w", name, record.ScanID, err)
 		}
 	}
+	if data, err := output.ReadPrivateFile(guard, "post-scan.json"); err == nil {
+		var advisory json.RawMessage
+		if err := json.Unmarshal(data, &advisory); err != nil {
+			return nil, fmt.Errorf("decode post-scan.json for scan %s: %w", record.ScanID, err)
+		}
+		result.PostScan = advisory
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read post-scan.json for scan %s: %w", record.ScanID, err)
+	}
 	return result, nil
+}
+
+func LoadLogs(record Record) (ScanLog, error) {
+	guard, err := output.OpenPrivateDir(record.OutputDir)
+	if err != nil {
+		return ScanLog{}, fmt.Errorf("validate private output for scan %s: %w", record.ScanID, err)
+	}
+	data, err := output.ReadPrivateFile(guard, "scan-log.jsonl")
+	if os.IsNotExist(err) {
+		return ScanLog{}, fmt.Errorf("no saved activity log is available for scan %s", record.ScanID)
+	}
+	if err != nil {
+		return ScanLog{}, fmt.Errorf("read activity log for scan %s: %w", record.ScanID, err)
+	}
+	log := ScanLog{ScanID: record.ScanID, Events: []scan.ActivityEvent{}}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var event scan.ActivityEvent
+		if err := decoder.Decode(&event); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return ScanLog{}, fmt.Errorf("decode activity log for scan %s: %w", record.ScanID, err)
+		}
+		log.Events = append(log.Events, event)
+	}
+	return log, nil
+}
+
+// LoadPostScan discovers the optional advisory artifact by its fixed filename;
+// it is deliberately not part of the canonical scan manifest.
+func LoadPostScan(record Record) (json.RawMessage, bool, error) {
+	guard, err := output.OpenPrivateDir(record.OutputDir)
+	if err != nil {
+		return nil, false, fmt.Errorf("validate private output for scan %s: %w", record.ScanID, err)
+	}
+	data, err := output.ReadPrivateFile(guard, "post-scan.json")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read post-scan advisory for scan %s: %w", record.ScanID, err)
+	}
+	var value json.RawMessage
+	if err := json.Unmarshal(data, &value); err != nil {
+		return nil, false, fmt.Errorf("decode post-scan advisory for scan %s: %w", record.ScanID, err)
+	}
+	return value, true, nil
 }

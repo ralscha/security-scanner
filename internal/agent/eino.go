@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -11,14 +12,18 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 
+	"security-scanner/internal/knowledgebase"
 	"security-scanner/internal/scan"
 )
+
+var ErrNoSubmission = errors.New("agent finished without a valid submit_scan call")
 
 type Config struct {
 	MaxIterations  int
 	Progress       func(string)
 	ScanPrompt     string
 	FollowUpPrompt string
+	KnowledgeBase  *knowledgebase.Prepared
 }
 
 type EinoAnalyzer struct {
@@ -44,17 +49,25 @@ func (a *EinoAnalyzer) Analyze(ctx context.Context, userContext string) (scan.Su
 	if err != nil {
 		return scan.Submission{}, fmt.Errorf("create repository tools: %w", err)
 	}
+	analysisTools := append([]tool.BaseTool(nil), repositoryTools...)
+	if a.config.KnowledgeBase != nil && len(a.config.KnowledgeBase.Documents) > 0 {
+		knowledgeTools, err := NewKnowledgeBase(a.config.KnowledgeBase, NewKnowledgeAccessTracker()).Tools()
+		if err != nil {
+			return scan.Submission{}, fmt.Errorf("create knowledge-base tools: %w", err)
+		}
+		analysisTools = append(analysisTools, knowledgeTools...)
+	}
 	store := NewSubmissionStore(a.inventory)
 	submitTool, err := store.Tool()
 	if err != nil {
 		return scan.Submission{}, fmt.Errorf("create submit tool: %w", err)
 	}
 
-	specialists, err := createSpecialists(ctx, a.chatModel, repositoryTools, a.config.MaxIterations, a.config.FollowUpPrompt)
+	specialists, err := createSpecialists(ctx, a.chatModel, analysisTools, a.config.MaxIterations, a.config.FollowUpPrompt)
 	if err != nil {
 		return scan.Submission{}, err
 	}
-	allTools := append(append([]tool.BaseTool(nil), repositoryTools...), submitTool)
+	allTools := append(append([]tool.BaseTool(nil), analysisTools...), submitTool)
 	coordinator, err := deep.New(ctx, &deep.Config{
 		Name:                   "security-scan-coordinator",
 		Description:            "Coordinates exhaustive security discovery, validation, and attack-path analysis",
@@ -104,7 +117,7 @@ func (a *EinoAnalyzer) Analyze(ctx context.Context, userContext string) (scan.Su
 	}
 	submission, ok := store.Get()
 	if !ok {
-		return scan.Submission{}, fmt.Errorf("agent finished without a valid submit_scan call")
+		return scan.Submission{}, ErrNoSubmission
 	}
 	return submission, nil
 }

@@ -151,6 +151,12 @@ Useful controls:
 --scan-prompt-file P    Read custom coordinator prompt extension from file
 --follow-up-prompt TEXT Custom specialist follow-up prompt extension
 --follow-up-prompt-file P Read custom specialist follow-up prompt extension from file
+--knowledge-base PATH   Read-only .txt/.md/.markdown source; repeatable
+--post-scan-prompt TEXT Run a separate advisory pass after the primary scan
+--post-scan-on VALUE    success, gaps, failure, or all
+--post-scan-failure-mode VALUE warn or fail
+--max-analysis-attempts N Bounded primary-analysis attempts; default 1
+--analysis-retry-base-delay D Base delay for typed transient retries
 --quiet                 Suppress progress events
 --json-progress         Emit JSON progress events on stderr
 --json-progress-strict  With --json-progress, emit only JSON events on stderr
@@ -189,6 +195,28 @@ Exit `1` means a completed scan violated the configured threshold. Exit `2` mean
 
 API keys passed through `--api-key` may be exposed in process listings. Provider-native environment variables are preferred.
 
+`--follow-up-prompt` keeps its original meaning: it extends specialist instructions inside the primary scan and can affect canonical findings and coverage. `--post-scan-prompt` starts a distinct, bounded pass after the primary attempt. That pass has read-only repository and knowledge-base tools and writes advisory output only; it cannot call `submit_scan` or replace canonical findings, coverage, Markdown, or SARIF.
+
+Text knowledge bases are opt-in and may be supplied more than once:
+
+```bash
+./security-scanner scan --target . \
+  --knowledge-base ./security-guidance \
+  --knowledge-base ~/organization-policy.md
+```
+
+Directories are searched recursively for `.txt`, `.md`, and `.markdown` files. Documents are UTF-8, bounded, content-attested, and exposed to the model by logical ID. Their content is always untrusted analysis data. Defaults are 100 documents, 2 MiB per document, and 10 MiB of normalized text in total. The same flags work with `--dry-run`, `scan preflight`, rerun, and bulk scan.
+
+Use a separate advisory pass when follow-through should not change scan truth:
+
+```bash
+./security-scanner scan --target . \
+  --post-scan-prompt "Prioritize the next three remediation actions." \
+  --post-scan-on all --post-scan-failure-mode warn
+```
+
+Post-scan defaults are `success`, `warn`, five minutes, and ten iterations. Eligible primary failures can trigger an advisory pass, but cancellation, deadline expiry, configuration/authentication failure, inventory drift, and recovery-state corruption never do. The primary error remains authoritative.
+
 To inspect scope without making model calls:
 
 ```bash
@@ -204,6 +232,10 @@ Each scan writes:
 - `coverage.json`: one outcome for every inventoried file.
 - `report.md`: human-readable report derived from the canonical documents.
 - `results.sarif`: SARIF 2.1.0 results for code scanning integrations.
+- `scan-log.jsonl`: redacted lifecycle, preparation, and agent-activity events.
+- `run-state.json`: private durable lifecycle and primary-attempt state, created before model analysis.
+
+When configured and completed, the advisory pass additionally writes `post-scan.json` and `post-scan.md`. These fixed filenames are intentionally absent from the canonical manifest. If primary analysis fails, only private operational state and the activity log are retained; no findings, coverage, report, SARIF, or manifest is fabricated.
 
 By default, artifacts are written below the per-user scanner state directory. An explicit `--output-dir` is resolved to an absolute, canonical path and may be anywhere except the scan target itself. A destination inside the target is excluded from the fixed file inventory. Scan directories and artifacts are private to the current operating-system user: POSIX output directories must use mode `0700` and have trusted, non-writable ancestry; Windows output receives a protected current-user-only ACL. A non-empty destination is rejected unless `--archive-existing` is supplied; in that case it is atomically renamed to a timestamped sibling before the new scan starts. Bulk scan output must remain outside every scanned worktree to keep concurrent inventories isolated.
 
@@ -211,28 +243,40 @@ A scan is `completed` only when every reviewable text file was read from start t
 
 ## History And Triage
 
-Completed scans are indexed in the per-user scanner state directory:
+Scan sessions are indexed in the per-user scanner state directory before analysis, so failed sessions can also be resolved by exact or unique-prefix ID for `scans logs`. Canonical result commands still require completed artifacts:
 
 ```bash
 ./security-scanner scans list --target /path/to/repo
 ./security-scanner scans show SCAN_ID
+./security-scanner scans logs SCAN_ID
+./security-scanner scans logs SCAN_ID --json
 ./security-scanner scans rerun SCAN_ID
 ./security-scanner scans match BEFORE_SCAN_ID AFTER_SCAN_ID
 ./security-scanner scans compare BEFORE_SCAN_ID AFTER_SCAN_ID
 ./security-scanner scans compare --json BEFORE_SCAN_ID AFTER_SCAN_ID
 ```
 
+Commands that accept a saved scan ID also accept any unique prefix. Ambiguous
+prefixes are rejected and list the matching scan IDs.
+
 New scans save their launch configuration, excluding API keys, so reruns retain
 authentication mode, provider endpoint, target scope, exclusions, threat-model
-context, policy, and runtime limits. Add `--verbose` to a rerun for diagnostics.
+context, policy, knowledge-base paths and bounds, post-scan policy, and runtime limits. Add `--verbose` to a rerun for diagnostics.
 If the original command supplied `--api-key`, rerun it manually with the key;
 the scanner never writes that credential to its manifest or history index.
 
 Finding occurrences use `SCAN_ID:FINDING_ID`. Analyst decisions are stored separately from canonical scan artifacts:
 
 ```bash
+./security-scanner findings list --target /path/to/repo
+./security-scanner findings list --target /path/to/repo --json
 ./security-scanner findings false-positive "SCAN_ID:FINDING_ID" --reason "Protected by the authorization check at the only call site."
 ```
+
+The repository findings view groups occurrences by stable fingerprint, keeps
+open historical findings visible when the latest scan does not reconfirm them,
+and suppresses identities marked false positive. Each entry states whether it
+was seen in the repository's latest saved scan.
 
 ## Validation And Patch Assist
 
@@ -288,7 +332,7 @@ Run the bulk scan:
 
 The input may appear before or after options, or be supplied with `--input repos.json`.
 
-The atomic `bulk-receipt.json` supports resume. An OS-backed supervisor lock prevents concurrent bulk processes from using the same receipt and output directory. Completed scans with coverage gaps are recorded as `completed_with_gaps`: they still make the bulk command exit `2`, but their sealed artifacts are preserved and are not rescanned on resume. Budget units are operator estimates, not provider billing claims.
+The atomic `bulk-receipt.json` supports resume. An OS-backed supervisor lock prevents concurrent bulk processes from using the same receipt and output directory. Completed scans with coverage gaps are recorded as `completed_with_gaps`: they still make the bulk command exit `2`, but their sealed artifacts are preserved and are not rescanned on resume. Receipts disclose outer job and inner analysis-attempt maxima; the combined ceiling is `(retries + 1) * max-analysis-attempts`. Warning-only post-scan failure does not cause an outer retry. Budget units are operator estimates, not provider billing claims; include expected post-scan work in the supplied estimate.
 
 Provider adapters do not currently expose consistent usage accounting through Eino's shared model interface, so manifests do not claim token or billing totals. Bulk budget reservations are explicit operator-supplied estimates.
 
@@ -299,6 +343,8 @@ Provider adapters do not currently expose consistent usage accounting through Ei
 - The scanner does not execute builds, tests, dependency audits, or application code.
 - Common dependency and build directories are excluded by default. Additional generated paths require `.gitignore` entries or `--exclude`.
 - Provider-specific hosted tools are disabled. All providers receive the same scanner-owned read-only tools and report contract.
+- PDF and DOCX knowledge-base parsing is not enabled; no ambient converter is executed.
+- Eino v0.9.13 checkpoints are written at handled framework interruptions and are not guaranteed after abrupt process termination. Checkpoint resume and selective worker recovery are therefore not exposed; see [ADR 0002](docs/adr/0002-eino-recovery-feasibility.md). Whole-analysis retry always starts a fresh analyzer and does not preserve partial worker progress.
 
 ## Development And Release
 

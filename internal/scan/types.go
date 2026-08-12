@@ -1,6 +1,9 @@
 package scan
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const SchemaVersion = "1"
 
@@ -87,6 +90,7 @@ type CoverageSummary struct {
 
 type CoverageDocument struct {
 	SchemaVersion string          `json:"schema_version"`
+	ScanID        string          `json:"scan_id,omitempty"`
 	Summary       CoverageSummary `json:"summary"`
 	Files         []CoverageFile  `json:"files"`
 }
@@ -104,24 +108,49 @@ type TimingBreakdown struct {
 	AnalysisMS    int64 `json:"analysis_ms"`
 }
 
+type ActivityEvent struct {
+	Timestamp    time.Time `json:"timestamp"`
+	Event        string    `json:"event"`
+	Message      string    `json:"message,omitempty"`
+	ScanID       string    `json:"scan_id,omitempty"`
+	Attempt      int       `json:"attempt,omitempty"`
+	Phase        string    `json:"phase,omitempty"`
+	ErrorClass   string    `json:"error_class,omitempty"`
+	Retryable    *bool     `json:"retryable,omitempty"`
+	CheckpointID string    `json:"checkpoint_id,omitempty"`
+	WorkerID     string    `json:"worker_id,omitempty"`
+	WorkerRole   string    `json:"worker_role,omitempty"`
+}
+
 // LaunchConfiguration contains the inputs needed to faithfully rerun a scan.
 // API keys are intentionally never persisted.
 type LaunchConfiguration struct {
-	AuthMode               string   `json:"auth_mode,omitempty"`
-	RequiresExplicitAPIKey bool     `json:"requires_explicit_api_key,omitempty"`
-	BaseURL                string   `json:"base_url,omitempty"`
-	APIVersion             string   `json:"api_version,omitempty"`
-	MaxOutputTokens        int      `json:"max_output_tokens,omitempty"`
-	UserContext            string   `json:"user_context,omitempty"`
-	ScanPrompt             string   `json:"scan_prompt,omitempty"`
-	FollowUpPrompt         string   `json:"follow_up_prompt,omitempty"`
-	Excludes               []string `json:"excludes,omitempty"`
-	MaxFileBytes           int64    `json:"max_file_bytes,omitempty"`
-	MaxIterations          int      `json:"max_iterations,omitempty"`
-	MaxAgentConcurrency    int      `json:"max_agent_concurrency,omitempty"`
-	RequestTimeout         string   `json:"request_timeout,omitempty"`
-	MaxDuration            string   `json:"max_duration,omitempty"`
-	FailOnSeverity         string   `json:"fail_on_severity,omitempty"`
+	AuthMode                      string   `json:"auth_mode,omitempty"`
+	RequiresExplicitAPIKey        bool     `json:"requires_explicit_api_key,omitempty"`
+	BaseURL                       string   `json:"base_url,omitempty"`
+	APIVersion                    string   `json:"api_version,omitempty"`
+	MaxOutputTokens               int      `json:"max_output_tokens,omitempty"`
+	UserContext                   string   `json:"user_context,omitempty"`
+	ScanPrompt                    string   `json:"scan_prompt,omitempty"`
+	FollowUpPrompt                string   `json:"follow_up_prompt,omitempty"`
+	PostScanPrompt                string   `json:"post_scan_prompt,omitempty"`
+	PostScanOn                    string   `json:"post_scan_on,omitempty"`
+	PostScanFailureMode           string   `json:"post_scan_failure_mode,omitempty"`
+	PostScanMaxDuration           string   `json:"post_scan_max_duration,omitempty"`
+	PostScanMaxIterations         int      `json:"post_scan_max_iterations,omitempty"`
+	KnowledgeBasePaths            []string `json:"knowledge_base_paths,omitempty"`
+	KnowledgeBaseMaxDocuments     int      `json:"knowledge_base_max_documents,omitempty"`
+	KnowledgeBaseMaxDocumentBytes int64    `json:"knowledge_base_max_document_bytes,omitempty"`
+	KnowledgeBaseMaxTotalBytes    int64    `json:"knowledge_base_max_total_bytes,omitempty"`
+	Excludes                      []string `json:"excludes,omitempty"`
+	MaxFileBytes                  int64    `json:"max_file_bytes,omitempty"`
+	MaxIterations                 int      `json:"max_iterations,omitempty"`
+	MaxAgentConcurrency           int      `json:"max_agent_concurrency,omitempty"`
+	RequestTimeout                string   `json:"request_timeout,omitempty"`
+	MaxDuration                   string   `json:"max_duration,omitempty"`
+	FailOnSeverity                string   `json:"fail_on_severity,omitempty"`
+	MaxAnalysisAttempts           int      `json:"max_analysis_attempts,omitempty"`
+	AnalysisRetryBaseDelay        string   `json:"analysis_retry_base_delay,omitempty"`
 }
 
 type ScanManifest struct {
@@ -146,8 +175,12 @@ type ScanManifest struct {
 }
 
 type Result struct {
-	Manifest ScanManifest
-	Findings FindingsDocument
-	Coverage CoverageDocument
-	OutDir   string
+	Manifest         ScanManifest
+	Findings         FindingsDocument
+	Coverage         CoverageDocument
+	Activity         []ActivityEvent
+	OutDir           string
+	Warnings         []string
+	AnalysisAttempts int
+	PostScan         json.RawMessage `json:"post_scan,omitempty"`
 }

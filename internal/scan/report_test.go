@@ -13,6 +13,18 @@ type completeTracker map[string]bool
 
 func (t completeTracker) Complete(file File) bool { return t[file.Path] }
 
+func TestFinalizeRequiresAllocatedScanID(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "app.go", []byte("package app\n"))
+	inv, err := BuildInventory(root, InventoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Finalize(inv, nil, Submission{ThreatModel: "Untrusted callers."}, FinalizeOptions{OutputDir: filepath.Join(t.TempDir(), "out")}); err == nil || !strings.Contains(err.Error(), "scan ID") {
+		t.Fatalf("missing scan ID was accepted: %v", err)
+	}
+}
+
 func TestFinalizeWritesContractAndSARIF(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, "app.go", []byte("package app\nfunc run() {}\n"))
@@ -30,14 +42,14 @@ func TestFinalizeWritesContractAndSARIF(t *testing.T) {
 			Remediation: "Validate input.", AttackPath: "Caller invokes run.",
 			Locations: []Location{{Path: "app.go", StartLine: 2, Role: "root_control"}},
 		}},
-	}, FinalizeOptions{OutputDir: out, Provider: "test-provider", Model: "test-model", StartedAt: time.Unix(100, 0)})
+	}, FinalizeOptions{ScanID: AllocateScanID(root, time.Unix(100, 0)), OutputDir: out, Provider: "test-provider", Model: "test-model", StartedAt: time.Unix(100, 0)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Manifest.Status != "completed" || result.Manifest.FindingCount != 1 {
 		t.Fatalf("unexpected manifest: %#v", result.Manifest)
 	}
-	for _, name := range []string{"findings.json", "coverage.json", "report.md", "results.sarif", "scan-manifest.json"} {
+	for _, name := range []string{"findings.json", "coverage.json", "report.md", "results.sarif", "scan-log.jsonl", "scan-manifest.json"} {
 		if _, err := os.Stat(filepath.Join(out, name)); err != nil {
 			t.Errorf("artifact %s: %v", name, err)
 		}
@@ -63,13 +75,45 @@ func TestFinalizeMarksIncompleteCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := Finalize(inv, completeTracker{}, Submission{ThreatModel: "No exposed entrypoints found."}, FinalizeOptions{
-		OutputDir: filepath.Join(t.TempDir(), "report"), Provider: "test-provider", Model: "test", StartedAt: time.Now(),
+		ScanID: AllocateScanID(root, time.Unix(200, 0)), OutputDir: filepath.Join(t.TempDir(), "report"), Provider: "test-provider", Model: "test", StartedAt: time.Now(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Manifest.Status != "completed_with_gaps" || result.Coverage.Summary.Unreviewed != 1 {
 		t.Fatalf("incomplete coverage was not surfaced: %#v", result)
+	}
+}
+
+func TestFinalizeRetainsActivityLogForExplicitAPIKeyScan(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "app.go", []byte("package app\n"))
+	inv, err := BuildInventory(root, InventoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "report")
+	result, err := Finalize(inv, nil, Submission{ThreatModel: "No exposed entrypoints found."}, FinalizeOptions{
+		ScanID: AllocateScanID(root, time.Unix(100, 0)), OutputDir: out, Provider: "test-provider", Model: "test", StartedAt: time.Unix(100, 0),
+		LaunchConfig: &LaunchConfiguration{AuthMode: "api-key", RequiresExplicitAPIKey: true},
+		Activity:     []ActivityEvent{{Timestamp: time.Unix(101, 0), Event: "scan.started", Message: "scan started"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Manifest.Artifacts["log"] != "scan-log.jsonl" {
+		t.Fatalf("log artifact missing from manifest: %#v", result.Manifest.Artifacts)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "scan-log.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], `"event":"scan.started"`) || !strings.Contains(lines[1], `"event":"scan.completed"`) {
+		t.Fatalf("unexpected scan log: %s", data)
+	}
+	if strings.Contains(string(data), "api-key") {
+		t.Fatalf("authentication configuration leaked into scan log: %s", data)
 	}
 }
 
@@ -83,7 +127,7 @@ func TestFinalizeRejectsChangedTarget(t *testing.T) {
 	writeTestFile(t, root, "app.go", []byte("package new\n"))
 	out := filepath.Join(t.TempDir(), "report")
 	_, err = Finalize(inv, completeTracker{"app.go": true}, Submission{ThreatModel: "Untrusted callers."}, FinalizeOptions{
-		OutputDir: out, Provider: "test-provider", Model: "test", StartedAt: time.Now(),
+		ScanID: AllocateScanID(root, time.Unix(300, 0)), OutputDir: out, Provider: "test-provider", Model: "test", StartedAt: time.Now(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "scan target changed") {
 		t.Fatalf("stale target was not rejected: %v", err)

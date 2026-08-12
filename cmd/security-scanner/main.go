@@ -90,6 +90,7 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 	flags.SetOutput(stderr)
 	var excludes stringListFlag
 	var paths pathListFlag
+	var knowledgeBases knowledgeBaseListFlag
 	target := flags.String("target", ".", "repository directory to scan")
 	outDir := flags.String("out", "", "artifact directory (default: per-user scanner state directory)")
 	flags.StringVar(outDir, "output-dir", "", "artifact directory (alias for --out)")
@@ -110,17 +111,29 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 	scanPromptFile := flags.String("scan-prompt-file", "", "read custom coordinator prompt extension from file")
 	followUpPrompt := flags.String("follow-up-prompt", "", "custom specialist follow-up prompt extension")
 	followUpPromptFile := flags.String("follow-up-prompt-file", "", "read custom specialist follow-up prompt extension from file")
+	postScanPrompt := flags.String("post-scan-prompt", "", "trusted prompt for a separate advisory post-scan pass")
+	postScanPromptFile := flags.String("post-scan-prompt-file", "", "read the advisory post-scan prompt from file")
+	postScanOn := flags.String("post-scan-on", "success", "post-scan trigger: success, gaps, failure, or all")
+	postScanFailureMode := flags.String("post-scan-failure-mode", "warn", "post-scan failure behavior after canonical success: warn or fail")
+	postScanMaxDuration := flags.Duration("post-scan-max-duration", 5*time.Minute, "maximum duration of the advisory post-scan pass")
+	postScanMaxIterations := flags.Int("post-scan-max-iterations", 10, "maximum reasoning iterations in the advisory post-scan pass")
+	knowledgeBaseMaxDocuments := flags.Int("knowledge-base-max-documents", 100, "maximum knowledge-base documents")
+	knowledgeBaseMaxDocumentBytes := flags.Int64("knowledge-base-max-document-bytes", 2*1024*1024, "maximum bytes per knowledge-base document")
+	knowledgeBaseMaxTotalBytes := flags.Int64("knowledge-base-max-total-bytes", 10*1024*1024, "maximum aggregate normalized knowledge-base text")
 	maxFileBytes := flags.Int64("max-file-bytes", 1024*1024, "maximum reviewable file size")
 	maxIterations := flags.Int("max-iterations", 80, "maximum reasoning iterations per agent")
 	maxAgentConcurrency := flags.Int("max-agent-concurrency", 4, "maximum concurrent model requests across agents")
 	maxDuration := flags.Duration("max-duration", 45*time.Minute, "overall scan timeout")
 	requestTimeout := flags.Duration("request-timeout", 10*time.Minute, "timeout per model request")
+	maxAnalysisAttempts := flags.Int("max-analysis-attempts", 1, "maximum primary-analysis attempts")
+	analysisRetryBaseDelay := flags.Duration("analysis-retry-base-delay", time.Second, "base delay for transient primary-analysis retries")
 	quiet := flags.Bool("quiet", false, "suppress progress messages")
 	jsonProgress := flags.Bool("json-progress", false, "write JSON progress events to stderr")
 	jsonProgressStrict := flags.Bool("json-progress-strict", false, "with --json-progress, emit only JSON progress events on stderr")
 	verbose := flags.Bool("verbose", false, "print redacted scan diagnostics to stderr")
 	flags.Var(&excludes, "exclude", "repository-relative directory to exclude; repeatable")
 	flags.Var(&paths, "path", "repository-relative file or directory to scan; repeatable")
+	flags.Var(&knowledgeBases, "knowledge-base", "read-only .txt, .md, or .markdown knowledge-base path; repeatable")
 	flags.Usage = func() {
 		stderr.Println("Usage: security-scanner scan [options]")
 		flags.PrintDefaults()
@@ -140,6 +153,16 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 	resolvedFollowUpPrompt, err := resolvePromptOverride(*followUpPrompt, *followUpPromptFile, "follow-up")
 	if err != nil {
 		stderr.Printf("scan failed: %v\n", err)
+		return 2
+	}
+	resolvedPostScanPrompt, err := resolvePromptOverride(*postScanPrompt, *postScanPromptFile, "post-scan")
+	if err != nil {
+		stderr.Printf("scan failed: %v\n", err)
+		return 2
+	}
+	if (*postScanOn != "success" && *postScanOn != "gaps" && *postScanOn != "failure" && *postScanOn != "all") ||
+		(*postScanFailureMode != "warn" && *postScanFailureMode != "fail") {
+		stderr.Println("scan failed: invalid --post-scan-on or --post-scan-failure-mode value")
 		return 2
 	}
 	if *jsonProgressStrict && !*jsonProgress {
@@ -199,10 +222,11 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 	emitTerminalProgress := func(message, status string) {
 		emitJSONProgress(message, "completed", 100, status)
 	}
-	if *maxAgentConcurrency <= 0 {
+	if *maxAgentConcurrency <= 0 || *maxAnalysisAttempts <= 0 || *analysisRetryBaseDelay <= 0 || *postScanMaxDuration <= 0 || *postScanMaxIterations <= 0 ||
+		*knowledgeBaseMaxDocuments <= 0 || *knowledgeBaseMaxDocumentBytes <= 0 || *knowledgeBaseMaxTotalBytes <= 0 {
 		diagnostic.Log("scan.failed", map[string]any{"classification": "configuration"})
 		emitTerminalProgress("scan failed", "failed")
-		emitLine("scan failed: --max-agent-concurrency must be positive")
+		emitLine("scan failed: concurrency, attempt, duration, iteration, delay, and knowledge-base limits must be positive")
 		return 2
 	}
 	threshold, err := policy.ParseSeverity(*failOnSeverity)
@@ -267,7 +291,12 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		FailOnSeverity:      *failOnSeverity,
 		ScanPrompt:          resolvedScanPrompt,
 		FollowUpPrompt:      resolvedFollowUpPrompt,
-		Progress:            progress,
+		PostScanPrompt:      resolvedPostScanPrompt, PostScanOn: *postScanOn, PostScanFailureMode: *postScanFailureMode,
+		PostScanMaxDuration: *postScanMaxDuration, PostScanMaxIterations: *postScanMaxIterations,
+		KnowledgeBasePaths: knowledgeBases, KnowledgeBaseMaxDocuments: *knowledgeBaseMaxDocuments,
+		KnowledgeBaseMaxDocumentBytes: *knowledgeBaseMaxDocumentBytes, KnowledgeBaseMaxTotalBytes: *knowledgeBaseMaxTotalBytes,
+		MaxAnalysisAttempts: *maxAnalysisAttempts, AnalysisRetryBaseDelay: *analysisRetryBaseDelay,
+		Progress: progress,
 	}
 	if *dryRun {
 		prepared, err := app.Prepare(options, time.Now().UTC())
@@ -319,6 +348,11 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 			emitTerminalProgress("scan failed", "failed")
 			emitf("scan failed: %v\n", err)
 		}
+		if result != nil {
+			stdout.Printf("Report: %s\n", filepath.Join(result.OutDir, "report.md"))
+			stdout.Printf("Status: %s\n", result.Manifest.Status)
+			stdout.Printf("Canonical artifacts retained at: %s\n", result.OutDir)
+		}
 		return 2
 	}
 	reportPath := filepath.Join(result.OutDir, "report.md")
@@ -326,9 +360,23 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 	stdout.Printf("Status: %s\n", result.Manifest.Status)
 	stdout.Printf("Model: %s/%s\n", result.Manifest.Provider, result.Manifest.Model)
 	stdout.Printf("Findings: %d\n", result.Manifest.FindingCount)
+	if _, findings, findingsErr := loadRepositoryFindings(result.Manifest.Target); findingsErr != nil {
+		emitf("scan warning: repository findings unavailable: %v\n", findingsErr)
+	} else {
+		confirmed := 0
+		for _, finding := range findings {
+			if finding.ConfirmedInLatestScan {
+				confirmed++
+			}
+		}
+		stdout.Printf("Open repository findings: %d (%d confirmed this scan, %d previously found)\n", len(findings), confirmed, len(findings)-confirmed)
+	}
 	stdout.Printf("Coverage: %d/%d reviewed (%d skipped, %d unreviewed)\n",
 		result.Coverage.Summary.Reviewed, result.Coverage.Summary.Total,
 		result.Coverage.Summary.Skipped, result.Coverage.Summary.Unreviewed)
+	for _, warning := range result.Warnings {
+		emitf("scan warning: %s\n", warning)
+	}
 	evaluation := policy.Evaluate(result.Findings.Findings, threshold)
 	exitCode := 0
 	if result.Coverage.Summary.Unreviewed > 0 {
@@ -362,6 +410,7 @@ func runPreflight(args []string, stdout, stderr *checkedWriter) int {
 	flags.SetOutput(stderr)
 	var excludes stringListFlag
 	var paths pathListFlag
+	var knowledgeBases knowledgeBaseListFlag
 	target := flags.String("target", ".", "repository directory to validate")
 	outDir := flags.String("output-dir", "", "artifact directory")
 	provider := flags.String("provider", "", "model provider")
@@ -374,6 +423,9 @@ func runPreflight(args []string, stdout, stderr *checkedWriter) int {
 	workingTree := flags.Bool("working-tree", false, "validate working-tree target resolution")
 	archiveExisting := flags.Bool("archive-existing", false, "allow archival of existing output during the real scan")
 	maxFileBytes := flags.Int64("max-file-bytes", 1024*1024, "maximum reviewable file size")
+	knowledgeBaseMaxDocuments := flags.Int("knowledge-base-max-documents", 100, "maximum knowledge-base documents")
+	knowledgeBaseMaxDocumentBytes := flags.Int64("knowledge-base-max-document-bytes", 2*1024*1024, "maximum bytes per knowledge-base document")
+	knowledgeBaseMaxTotalBytes := flags.Int64("knowledge-base-max-total-bytes", 10*1024*1024, "maximum aggregate normalized knowledge-base text")
 	asJSON := flags.Bool("json", false, "write machine-readable JSON")
 	scanPrompt := flags.String("scan-prompt", "", "custom coordinator prompt extension")
 	scanPromptFile := flags.String("scan-prompt-file", "", "read custom coordinator prompt extension from file")
@@ -381,6 +433,7 @@ func runPreflight(args []string, stdout, stderr *checkedWriter) int {
 	followUpPromptFile := flags.String("follow-up-prompt-file", "", "read custom specialist follow-up prompt extension from file")
 	flags.Var(&excludes, "exclude", "repository-relative exclusion; repeatable")
 	flags.Var(&paths, "path", "repository-relative file or directory; repeatable")
+	flags.Var(&knowledgeBases, "knowledge-base", "read-only .txt, .md, or .markdown knowledge-base path; repeatable")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return 2
 	}
@@ -411,6 +464,8 @@ func runPreflight(args []string, stdout, stderr *checkedWriter) int {
 		Includes: resolution.Paths, TargetMode: resolution.Mode, TargetRef: resolution.Ref,
 		ArchiveExisting: *archiveExisting, MaxFileBytes: *maxFileBytes,
 		ScanPrompt: resolvedScanPrompt, FollowUpPrompt: resolvedFollowUpPrompt,
+		KnowledgeBasePaths: knowledgeBases, KnowledgeBaseMaxDocuments: *knowledgeBaseMaxDocuments,
+		KnowledgeBaseMaxDocumentBytes: *knowledgeBaseMaxDocumentBytes, KnowledgeBaseMaxTotalBytes: *knowledgeBaseMaxTotalBytes,
 	})
 	if *asJSON {
 		_ = writeJSON(result, stdout, stderr)
@@ -419,7 +474,7 @@ func runPreflight(args []string, stdout, stderr *checkedWriter) int {
 			stdout.Printf("[%s] %s: %s\n", check.Status, check.Name, check.Message)
 		}
 		if result.OK {
-			stdout.Printf("Resolved: %s/%s, %d files\n", result.Provider, result.Model, result.FilesTotal)
+			stdout.Printf("Resolved: %s/%s, %d files, %d knowledge-base documents\n", result.Provider, result.Model, result.FilesTotal, result.KnowledgeBaseDocuments)
 		}
 	}
 	if !result.OK {
@@ -442,7 +497,7 @@ func runProviders(stdout *checkedWriter) int {
 
 func runScans(args []string, stdout, stderr *checkedWriter) int {
 	if len(args) == 0 {
-		stderr.Println("Usage: security-scanner scans <list|show|rerun|match|compare> [options]")
+		stderr.Println("Usage: security-scanner scans <list|show|logs|rerun|match|compare> [options]")
 		return 2
 	}
 	store, err := history.DefaultStore()
@@ -499,6 +554,31 @@ func runScans(args []string, stdout, stderr *checkedWriter) int {
 			return 2
 		}
 		return writeJSON(result, stdout, stderr)
+	case "logs":
+		scanID, asJSON, err := parseScanLogsArgs(args[1:])
+		if err != nil {
+			stderr.Printf("scans logs failed: %v\n", err)
+			stderr.Println("Usage: security-scanner scans logs SCAN_ID [--json]")
+			return 2
+		}
+		record, err := store.Get(scanID)
+		if err != nil {
+			stderr.Printf("scans logs failed: %v\n", err)
+			return 2
+		}
+		log, err := history.LoadLogs(record)
+		if err != nil {
+			stderr.Printf("scans logs failed: %v\n", err)
+			return 2
+		}
+		if asJSON {
+			return writeJSON(log, stdout, stderr)
+		}
+		stdout.Printf("SCAN ACTIVITY  %s\n", log.ScanID)
+		for _, event := range log.Events {
+			stdout.Printf("%s  %-20s %s\n", event.Timestamp.Format(time.RFC3339), event.Event, event.Message)
+		}
+		return 0
 	case "rerun":
 		scanID, verbose, err := parseRerunArgs(args[1:])
 		if err != nil {
@@ -572,8 +652,37 @@ func runScans(args []string, stdout, stderr *checkedWriter) int {
 }
 
 func runFindings(args []string, stdout, stderr *checkedWriter) int {
+	if len(args) > 0 && args[0] == "list" {
+		flags := flag.NewFlagSet("findings list", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		target := flags.String("target", ".", "repository root whose open findings should be listed")
+		asJSON := flags.Bool("json", false, "write machine-readable JSON")
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
+			return 2
+		}
+		repository, findings, err := loadRepositoryFindings(*target)
+		if err != nil {
+			stderr.Printf("findings list failed: %v\n", err)
+			return 2
+		}
+		if *asJSON {
+			return writeJSON(struct {
+				Repository string                      `json:"repository"`
+				Findings   []history.RepositoryFinding `json:"findings"`
+			}{Repository: repository, Findings: findings}, stdout, stderr)
+		}
+		stdout.Printf("OPEN FINDINGS  %d\n", len(findings))
+		for _, finding := range findings {
+			state := "not confirmed in latest scan"
+			if finding.ConfirmedInLatestScan {
+				state = "seen in latest scan"
+			}
+			stdout.Printf("[%s] %s: %s (%s)\n", finding.Severity, finding.OccurrenceID, finding.Title, state)
+		}
+		return 0
+	}
 	if len(args) < 2 || args[0] != "false-positive" {
-		stderr.Println("Usage: security-scanner findings false-positive OCCURRENCE_ID --reason TEXT [--scan SCAN_ID]")
+		stderr.Println("Usage: security-scanner findings <list|false-positive> [options]")
 		return 2
 	}
 	occurrenceID := args[1]
@@ -589,34 +698,40 @@ func runFindings(args []string, stdout, stderr *checkedWriter) int {
 		return 2
 	}
 	lookupID := occurrenceID
+	occurrenceScanID := ""
 	if strings.Contains(occurrenceID, ":") {
-		occurrenceScanID, findingID, err := triage.ParseOccurrenceID(occurrenceID)
+		var findingID string
+		var err error
+		occurrenceScanID, findingID, err = triage.ParseOccurrenceID(occurrenceID)
 		if err != nil {
 			stderr.Printf("findings failed: %v\n", err)
 			return 2
 		}
-		if *scanID != "" && *scanID != occurrenceScanID {
-			stderr.Println("findings failed: occurrence scan and --scan disagree")
-			return 2
-		}
-		*scanID, lookupID = occurrenceScanID, findingID
+		lookupID = findingID
 	}
 	historyStore, err := history.DefaultStore()
 	if err != nil {
 		stderr.Printf("findings failed: %v\n", err)
 		return 2
 	}
-	records, err := historyStore.List("")
+	selectedRecord, err := resolveScanSelectors(historyStore, occurrenceScanID, *scanID)
 	if err != nil {
 		stderr.Printf("findings failed: %v\n", err)
 		return 2
 	}
+	var records []history.Record
+	if selectedRecord != nil {
+		records = []history.Record{*selectedRecord}
+	} else {
+		records, err = historyStore.List("")
+		if err != nil {
+			stderr.Printf("findings failed: %v\n", err)
+			return 2
+		}
+	}
 	var selected history.Record
 	var selectedFinding *scan.Finding
 	for _, record := range records {
-		if *scanID != "" && record.ScanID != *scanID {
-			continue
-		}
 		result, loadErr := history.LoadResult(record)
 		if loadErr != nil {
 			continue
@@ -640,10 +755,7 @@ func runFindings(args []string, stdout, stderr *checkedWriter) int {
 		stderr.Printf("findings failed: %v\n", err)
 		return 2
 	}
-	fullOccurrenceID := occurrenceID
-	if !strings.Contains(occurrenceID, ":") {
-		fullOccurrenceID = selected.ScanID + ":" + occurrenceID
-	}
+	fullOccurrenceID := selected.ScanID + ":" + lookupID
 	decision := triage.Decision{OccurrenceID: fullOccurrenceID, Fingerprint: selectedFinding.Fingerprint, ScanID: selected.ScanID, Target: selected.Target, Reason: *reason, UpdatedAt: time.Now().UTC()}
 	if err := store.SetDecision(decision); err != nil {
 		stderr.Printf("findings failed: %v\n", err)
@@ -651,6 +763,30 @@ func runFindings(args []string, stdout, stderr *checkedWriter) int {
 	}
 	decision.Disposition = "false_positive"
 	return writeJSON(decision, stdout, stderr)
+}
+
+func loadRepositoryFindings(target string) (string, []history.RepositoryFinding, error) {
+	repository, err := filepath.Abs(target)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve repository target: %w", err)
+	}
+	historyStore, err := history.DefaultStore()
+	if err != nil {
+		return "", nil, err
+	}
+	triageStore, err := triage.DefaultStore()
+	if err != nil {
+		return "", nil, err
+	}
+	decisions, err := triageStore.List()
+	if err != nil {
+		return "", nil, err
+	}
+	findings, err := historyStore.RepositoryFindings(repository, decisions)
+	if err != nil {
+		return "", nil, err
+	}
+	return repository, findings, nil
 }
 
 func runRemediation(kind string, args []string, stdout, stderr *checkedWriter) int {
@@ -687,7 +823,7 @@ func runRemediation(kind string, args []string, stdout, stderr *checkedWriter) i
 		stderr.Println("finding or prompt is required")
 		return 2
 	}
-	if *scanID != "" || strings.HasPrefix(strings.ToUpper(input), "F-") {
+	if *scanID != "" || strings.HasPrefix(strings.ToUpper(input), "F-") || strings.Contains(input, ":") {
 		if resolvedInput, resolvedTarget, err := resolveReviewInput(input, *scanID); err != nil {
 			stderr.Printf("%s failed: %v\n", kind, err)
 			return 2
@@ -769,6 +905,7 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 	}
 	flags := flag.NewFlagSet("bulk-scan", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	var knowledgeBases knowledgeBaseListFlag
 	explicitInput := flags.String("input", "", "bulk input file; may also be supplied positionally")
 	outputDir := flags.String("output-dir", "", "directory for isolated scans and the resumable receipt")
 	workers := flags.Int("workers", 2, "maximum concurrent repository scans")
@@ -790,6 +927,18 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 	maxAgentConcurrency := flags.Int("max-agent-concurrency", 4, "maximum concurrent model requests per repository")
 	requestTimeout := flags.Duration("request-timeout", 10*time.Minute, "timeout per model request")
 	maxDuration := flags.Duration("max-duration", 45*time.Minute, "deadline for each repository scan")
+	maxAnalysisAttempts := flags.Int("max-analysis-attempts", 1, "maximum primary-analysis attempts within each bulk job")
+	analysisRetryBaseDelay := flags.Duration("analysis-retry-base-delay", time.Second, "base delay for transient primary-analysis retries")
+	postScanPrompt := flags.String("post-scan-prompt", "", "trusted prompt for a separate advisory post-scan pass")
+	postScanPromptFile := flags.String("post-scan-prompt-file", "", "read the advisory post-scan prompt from file")
+	postScanOn := flags.String("post-scan-on", "success", "post-scan trigger: success, gaps, failure, or all")
+	postScanFailureMode := flags.String("post-scan-failure-mode", "warn", "post-scan failure behavior: warn or fail")
+	postScanMaxDuration := flags.Duration("post-scan-max-duration", 5*time.Minute, "maximum advisory post-scan duration")
+	postScanMaxIterations := flags.Int("post-scan-max-iterations", 10, "maximum advisory post-scan iterations")
+	knowledgeBaseMaxDocuments := flags.Int("knowledge-base-max-documents", 100, "maximum shared knowledge-base documents")
+	knowledgeBaseMaxDocumentBytes := flags.Int64("knowledge-base-max-document-bytes", 2*1024*1024, "maximum bytes per knowledge-base document")
+	knowledgeBaseMaxTotalBytes := flags.Int64("knowledge-base-max-total-bytes", 10*1024*1024, "maximum aggregate normalized knowledge-base text")
+	flags.Var(&knowledgeBases, "knowledge-base", "shared read-only knowledge-base path; repeatable")
 	jsonProgress := flags.Bool("json-progress", false, "write JSON progress events")
 	positionals, err := parseInterspersedFlags(flags, args)
 	if err != nil {
@@ -804,8 +953,20 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 		stderr.Println("bulk-scan requires exactly one input file, supplied positionally or with --input")
 		return 2
 	}
+	resolvedPostScanPrompt, err := resolvePromptOverride(*postScanPrompt, *postScanPromptFile, "post-scan")
+	if err != nil {
+		stderr.Printf("bulk-scan failed: %v\n", err)
+		return 2
+	}
+	if (*postScanOn != "success" && *postScanOn != "gaps" && *postScanOn != "failure" && *postScanOn != "all") ||
+		(*postScanFailureMode != "warn" && *postScanFailureMode != "fail") {
+		stderr.Println("bulk-scan failed: invalid --post-scan-on or --post-scan-failure-mode value")
+		return 2
+	}
 	inputPath := inputs[0]
-	if *outputDir == "" || *workers <= 0 || *retries < 0 || *maxScans < 0 || *retryDelay <= 0 || *maxAgentConcurrency <= 0 {
+	if *outputDir == "" || *workers <= 0 || *retries < 0 || *maxScans < 0 || *retryDelay <= 0 || *maxAgentConcurrency <= 0 ||
+		*maxAnalysisAttempts <= 0 || *analysisRetryBaseDelay <= 0 || *postScanMaxDuration <= 0 || *postScanMaxIterations <= 0 ||
+		*knowledgeBaseMaxDocuments <= 0 || *knowledgeBaseMaxDocumentBytes <= 0 || *knowledgeBaseMaxTotalBytes <= 0 {
 		stderr.Println("bulk-scan requires --output-dir, positive --workers, and non-negative retry/guardrail values")
 		return 2
 	}
@@ -860,13 +1021,29 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 			MaxOutputTokens: *maxOutputTokens, MaxFileBytes: *maxFileBytes,
 			MaxIterations: *maxIterations, RequestTimeout: *requestTimeout, ArchiveExisting: true,
 			MaxAgentConcurrency: *maxAgentConcurrency, UserContext: job.Context,
+			KnowledgeBasePaths: knowledgeBases, KnowledgeBaseMaxDocuments: *knowledgeBaseMaxDocuments,
+			KnowledgeBaseMaxDocumentBytes: *knowledgeBaseMaxDocumentBytes, KnowledgeBaseMaxTotalBytes: *knowledgeBaseMaxTotalBytes,
+			PostScanPrompt: resolvedPostScanPrompt, PostScanOn: *postScanOn, PostScanFailureMode: *postScanFailureMode,
+			PostScanMaxDuration: *postScanMaxDuration, PostScanMaxIterations: *postScanMaxIterations,
+			MaxAnalysisAttempts: *maxAnalysisAttempts, AnalysisRetryBaseDelay: *analysisRetryBaseDelay,
 		})
 		if err != nil {
-			return bulk.Outcome{}, err
+			outcome := bulk.Outcome{OutputDir: job.OutputDir, AnalysisAttempts: app.AttemptsFromError(err)}
+			if result != nil {
+				outcome.ScanID = result.Manifest.ScanID
+				outcome.Status = result.Manifest.Status
+				outcome.FindingCount = len(result.Findings.Findings)
+				outcome.AnalysisAttempts = result.AnalysisAttempts
+				if result.Manifest.Status == bulk.StatusCompletedWithGaps {
+					return outcome, nil
+				}
+			}
+			return outcome, err
 		}
 		outcome := bulk.Outcome{
 			ScanID: result.Manifest.ScanID, OutputDir: result.OutDir, Status: bulk.StatusCompleted,
-			FindingCount: len(result.Findings.Findings),
+			FindingCount:     len(result.Findings.Findings),
+			AnalysisAttempts: result.AnalysisAttempts,
 		}
 		if result.Coverage.Summary.Unreviewed > 0 {
 			outcome.Status = bulk.StatusCompletedWithGaps
@@ -879,6 +1056,7 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 	}), bulk.Config{
 		Workers: *workers, MaxRetries: *retries, RetryDelay: *retryDelay, ReceiptPath: receiptPath,
 		MaxBudget: *maxBudget, EstimatedCost: *estimatedCost, Resume: true, OnEvent: progress,
+		InnerAnalysisMaxAttempts: *maxAnalysisAttempts,
 	})
 	completed, incomplete, failed := 0, 0, 0
 	for _, entry := range receipt.Jobs {
@@ -981,33 +1159,66 @@ func exitCodeForSignal(received os.Signal) int {
 }
 
 func resolveReviewInput(input, scanID string) (string, string, error) {
-	if scanID == "" && !strings.HasPrefix(strings.ToUpper(input), "F-") {
+	lookupID := input
+	occurrenceScanID := ""
+	if strings.Contains(input, ":") {
+		var err error
+		occurrenceScanID, lookupID, err = triage.ParseOccurrenceID(input)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	if scanID == "" && occurrenceScanID == "" && !strings.HasPrefix(strings.ToUpper(input), "F-") {
 		return "", "", nil
 	}
 	store, err := history.DefaultStore()
 	if err != nil {
 		return "", "", err
 	}
-	records, err := store.List("")
+	selectedRecord, err := resolveScanSelectors(store, occurrenceScanID, scanID)
 	if err != nil {
 		return "", "", err
 	}
-	for _, record := range records {
-		if scanID != "" && record.ScanID != scanID {
-			continue
+	var records []history.Record
+	if selectedRecord != nil {
+		records = []history.Record{*selectedRecord}
+	} else {
+		records, err = store.List("")
+		if err != nil {
+			return "", "", err
 		}
+	}
+	for _, record := range records {
 		result, err := history.LoadResult(record)
 		if err != nil {
 			continue
 		}
 		for _, finding := range result.Findings.Findings {
-			if finding.ID == input {
+			if finding.ID == lookupID {
 				data, err := json.Marshal(finding)
 				return string(data), record.Target, err
 			}
 		}
 	}
 	return "", "", fmt.Errorf("finding %q was not found", input)
+}
+
+func resolveScanSelectors(store *history.Store, occurrenceScanID, optionScanID string) (*history.Record, error) {
+	var selected *history.Record
+	for _, scanID := range []string{occurrenceScanID, optionScanID} {
+		if strings.TrimSpace(scanID) == "" {
+			continue
+		}
+		record, err := store.Get(scanID)
+		if err != nil {
+			return nil, err
+		}
+		if selected != nil && selected.ScanID != record.ScanID {
+			return nil, fmt.Errorf("occurrence scan and --scan disagree")
+		}
+		selected = &record
+	}
+	return selected, nil
 }
 
 func writeNewFile(path string, data []byte) error {
@@ -1067,6 +1278,33 @@ func parseRerunArgs(args []string) (string, bool, error) {
 		return "", false, fmt.Errorf("scan ID is required")
 	}
 	return scanID, verbose, nil
+}
+
+func parseScanLogsArgs(args []string) (string, bool, error) {
+	var scanID string
+	asJSON := false
+	for _, arg := range args {
+		switch {
+		case arg == "--json":
+			asJSON = true
+		case strings.HasPrefix(arg, "--json="):
+			value, err := strconv.ParseBool(strings.TrimPrefix(arg, "--json="))
+			if err != nil {
+				return "", false, fmt.Errorf("--json expects true or false")
+			}
+			asJSON = value
+		case strings.HasPrefix(arg, "-"):
+			return "", false, fmt.Errorf("unknown option %q", arg)
+		case scanID != "":
+			return "", false, fmt.Errorf("expected exactly one scan ID")
+		default:
+			scanID = strings.TrimSpace(arg)
+		}
+	}
+	if scanID == "" {
+		return "", false, fmt.Errorf("scan ID is required")
+	}
+	return scanID, asJSON, nil
 }
 
 func resolvePromptOverride(inlineValue, filePath, promptKind string) (string, error) {
@@ -1134,7 +1372,9 @@ func rerunScanArgs(record history.Record, verbose bool) ([]string, error) {
 		if config.APIVersion != "" {
 			args = append(args, "--api-version", config.APIVersion)
 		}
-		if config.MaxOutputTokens < 0 || config.MaxFileBytes < 0 || config.MaxIterations < 0 || config.MaxAgentConcurrency < 0 {
+		if config.MaxOutputTokens < 0 || config.MaxFileBytes < 0 || config.MaxIterations < 0 || config.MaxAgentConcurrency < 0 ||
+			config.KnowledgeBaseMaxDocuments < 0 || config.KnowledgeBaseMaxDocumentBytes < 0 || config.KnowledgeBaseMaxTotalBytes < 0 ||
+			config.PostScanMaxIterations < 0 || config.MaxAnalysisAttempts < 0 {
 			return nil, fmt.Errorf("saved scan contains invalid negative runtime settings")
 		}
 		if config.MaxOutputTokens > 0 {
@@ -1173,6 +1413,63 @@ func rerunScanArgs(record history.Record, verbose bool) ([]string, error) {
 		}
 		if config.FollowUpPrompt != "" {
 			args = append(args, "--follow-up-prompt", config.FollowUpPrompt)
+		}
+		if config.PostScanPrompt != "" {
+			args = append(args, "--post-scan-prompt", config.PostScanPrompt)
+		}
+		if config.PostScanOn != "" {
+			switch config.PostScanOn {
+			case "success", "gaps", "failure", "all":
+				args = append(args, "--post-scan-on", config.PostScanOn)
+			default:
+				return nil, fmt.Errorf("saved scan has invalid post-scan trigger")
+			}
+		}
+		if config.PostScanFailureMode != "" {
+			if config.PostScanFailureMode != "warn" && config.PostScanFailureMode != "fail" {
+				return nil, fmt.Errorf("saved scan has invalid post-scan failure mode")
+			}
+			args = append(args, "--post-scan-failure-mode", config.PostScanFailureMode)
+		}
+		if config.PostScanMaxIterations > 0 {
+			args = append(args, "--post-scan-max-iterations", strconv.Itoa(config.PostScanMaxIterations))
+		}
+		if config.MaxAnalysisAttempts > 0 {
+			args = append(args, "--max-analysis-attempts", strconv.Itoa(config.MaxAnalysisAttempts))
+		}
+		for _, setting := range []struct {
+			flag  string
+			value string
+		}{
+			{flag: "--post-scan-max-duration", value: config.PostScanMaxDuration},
+			{flag: "--analysis-retry-base-delay", value: config.AnalysisRetryBaseDelay},
+		} {
+			if setting.value == "" {
+				continue
+			}
+			duration, err := time.ParseDuration(setting.value)
+			if err != nil || duration <= 0 {
+				return nil, fmt.Errorf("saved scan has invalid %s value", setting.flag)
+			}
+			args = append(args, setting.flag, setting.value)
+		}
+		for _, path := range config.KnowledgeBasePaths {
+			if strings.TrimSpace(path) == "" {
+				return nil, fmt.Errorf("saved scan contains an empty knowledge-base path")
+			}
+			if _, err := os.Lstat(path); err != nil {
+				return nil, fmt.Errorf("saved knowledge-base source is unavailable: %s: %w", path, err)
+			}
+			args = append(args, "--knowledge-base", path)
+		}
+		if config.KnowledgeBaseMaxDocuments > 0 {
+			args = append(args, "--knowledge-base-max-documents", strconv.Itoa(config.KnowledgeBaseMaxDocuments))
+		}
+		if config.KnowledgeBaseMaxDocumentBytes > 0 {
+			args = append(args, "--knowledge-base-max-document-bytes", strconv.FormatInt(config.KnowledgeBaseMaxDocumentBytes, 10))
+		}
+		if config.KnowledgeBaseMaxTotalBytes > 0 {
+			args = append(args, "--knowledge-base-max-total-bytes", strconv.FormatInt(config.KnowledgeBaseMaxTotalBytes, 10))
 		}
 		for _, exclude := range config.Excludes {
 			if strings.TrimSpace(exclude) == "" {
@@ -1344,7 +1641,8 @@ func printUsage(w *checkedWriter) {
 	w.Println("  security-scanner inventory [options]")
 	w.Println("  security-scanner providers")
 	w.Println("  security-scanner bulk-scan [options] INPUT")
-	w.Println("  security-scanner scans <list|show|rerun|match|compare>")
+	w.Println("  security-scanner scans <list|show|logs|rerun|match|compare>")
+	w.Println("  security-scanner findings list [--target PATH] [--json]")
 	w.Println("  security-scanner findings false-positive OCCURRENCE_ID --reason TEXT")
 	w.Println("  security-scanner validate [options] FINDING_OR_PROMPT")
 	w.Println("  security-scanner patch [options] FINDING_OR_PROMPT")
@@ -1404,6 +1702,19 @@ func (f *stringListFlag) Set(value string) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return fmt.Errorf("exclude path cannot be empty")
+	}
+	*f = append(*f, value)
+	return nil
+}
+
+type knowledgeBaseListFlag []string
+
+func (f *knowledgeBaseListFlag) String() string { return strings.Join(*f, ",") }
+
+func (f *knowledgeBaseListFlag) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("knowledge-base path cannot be empty")
 	}
 	*f = append(*f, value)
 	return nil

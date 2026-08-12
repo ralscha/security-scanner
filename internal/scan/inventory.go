@@ -106,6 +106,9 @@ func BuildInventory(root string, opts InventoryOptions) (*Inventory, error) {
 			ignoreMatcher.AddFromFile(filepath.Join(path, ".gitignore"), rel)
 			return nil
 		}
+		if _, protected := protectedExcludedDirs[entry.Name()]; protected {
+			return nil
+		}
 		if ignoreMatcher.MatchPath(rel, false) && !exactlyIncluded(rel, includes) && !underForcedDir(rel, forcedDirs) {
 			return nil
 		}
@@ -169,14 +172,14 @@ func VerifyInventory(inv *Inventory) error {
 	}
 	current, err := BuildInventory(inv.Root, inv.options)
 	if err != nil {
-		return fmt.Errorf("scan target changed after inventory: %w", err)
+		return &InventoryDriftError{Err: fmt.Errorf("scan target changed after inventory: %w", err)}
 	}
 	if len(current.Files) != len(inv.Files) {
-		return fmt.Errorf("scan target changed after inventory: file set changed")
+		return &InventoryDriftError{Err: fmt.Errorf("scan target changed after inventory: file set changed")}
 	}
 	for index := range inv.Files {
 		if inv.Files[index] != current.Files[index] {
-			return fmt.Errorf("scan target changed after inventory: %s", inv.Files[index].Path)
+			return &InventoryDriftError{Err: fmt.Errorf("scan target changed after inventory: %s", inv.Files[index].Path)}
 		}
 	}
 	return nil
@@ -188,9 +191,24 @@ func VerifyFileContent(file File, content []byte) error {
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(content))
 	if int64(len(content)) != file.Size || digest != file.digest {
-		return fmt.Errorf("file %q changed after inventory", file.Path)
+		return &InventoryDriftError{Err: fmt.Errorf("file %q changed after inventory", file.Path)}
 	}
 	return nil
+}
+
+// InventoryDigest returns a deterministic attestation digest without exposing
+// per-file digests in persisted manifests.
+func InventoryDigest(inv *Inventory) string {
+	if inv == nil {
+		return ""
+	}
+	hash := sha256.New()
+	for _, file := range inv.Files {
+		if _, err := fmt.Fprintf(hash, "%s\x00%d\x00%d\x00%s\x00%t\x00%s\n", file.Path, file.Size, file.Lines, file.digest, file.Reviewable, file.SkipReason); err != nil {
+			panic(err) // crypto/sha256 never returns a write error
+		}
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func normalizeIncludes(values []string) []string {

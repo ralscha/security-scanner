@@ -8,6 +8,7 @@ import (
 	"html"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ type CoverageTracker interface {
 }
 
 type FinalizeOptions struct {
+	ScanID              string
 	OutputDir           string
 	Provider            string
 	Model               string
@@ -31,11 +33,15 @@ type FinalizeOptions struct {
 	AnalysisDuration    time.Duration
 	OutputGuard         *output.Guard
 	LaunchConfig        *LaunchConfiguration
+	Activity            []ActivityEvent
 }
 
 func Finalize(inv *Inventory, tracker CoverageTracker, submission Submission, opts FinalizeOptions) (*Result, error) {
+	if err := ValidateScanID(opts.ScanID); err != nil {
+		return nil, err
+	}
 	if problems := ValidateSubmission(inv, submission); len(problems) > 0 {
-		return nil, fmt.Errorf("invalid submission: %s", strings.Join(problems, "; "))
+		return nil, &InvalidSubmissionError{Problems: problems}
 	}
 	if opts.OutputDir == "" {
 		return nil, fmt.Errorf("output directory is required")
@@ -52,7 +58,8 @@ func Finalize(inv *Inventory, tracker CoverageTracker, submission Submission, op
 	}
 	coverage := buildCoverage(inv, tracker)
 	completedAt := time.Now().UTC()
-	scanID := newScanID(inv.Root, opts.StartedAt)
+	scanID := opts.ScanID
+	coverage.ScanID = scanID
 	findingsDoc := FindingsDocument{
 		SchemaVersion: SchemaVersion,
 		ScanID:        scanID,
@@ -81,6 +88,7 @@ func Finalize(inv *Inventory, tracker CoverageTracker, submission Submission, op
 			"coverage": "coverage.json",
 			"report":   "report.md",
 			"sarif":    "results.sarif",
+			"log":      "scan-log.jsonl",
 		},
 		FilesTotal:    coverage.Summary.Total,
 		FilesReviewed: coverage.Summary.Reviewed,
@@ -92,7 +100,9 @@ func Finalize(inv *Inventory, tracker CoverageTracker, submission Submission, op
 		},
 		LaunchConfig: cloneLaunchConfiguration(opts.LaunchConfig),
 	}
-	result := &Result{Manifest: manifest, Findings: findingsDoc, Coverage: coverage, OutDir: opts.OutputDir}
+	activity := append([]ActivityEvent(nil), opts.Activity...)
+	activity = append(activity, ActivityEvent{Timestamp: completedAt, Event: "scan.completed", Message: status})
+	result := &Result{Manifest: manifest, Findings: findingsDoc, Coverage: coverage, Activity: activity, OutDir: opts.OutputDir}
 	guard := opts.OutputGuard
 	if guard == nil {
 		prepared, err := output.PreparePrivateDir(opts.OutputDir)
@@ -113,6 +123,7 @@ func cloneLaunchConfiguration(config *LaunchConfiguration) *LaunchConfiguration 
 	}
 	clone := *config
 	clone.Excludes = append([]string(nil), config.Excludes...)
+	clone.KnowledgeBasePaths = append([]string(nil), config.KnowledgeBasePaths...)
 	return &clone
 }
 
@@ -148,6 +159,7 @@ func writeArtifacts(result *Result, guard *output.Guard) error {
 		{name: "coverage.json", data: mustJSON(result.Coverage)},
 		{name: "report.md", data: renderMarkdown(result)},
 		{name: "results.sarif", data: mustJSON(buildSARIF(result.Findings))},
+		{name: "scan-log.jsonl", data: activityJSONL(result.Activity)},
 		{name: "scan-manifest.json", data: mustJSON(result.Manifest)},
 	}
 	for _, artifact := range artifacts {
@@ -159,6 +171,17 @@ func writeArtifacts(result *Result, guard *output.Guard) error {
 		}
 	}
 	return nil
+}
+
+func activityJSONL(events []ActivityEvent) []byte {
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
+	for _, event := range events {
+		if err := encoder.Encode(event); err != nil {
+			panic(err)
+		}
+	}
+	return data.Bytes()
 }
 
 func mustJSON(value any) []byte {
@@ -261,9 +284,18 @@ func cleanStrings(values []string) []string {
 	return clean
 }
 
-func newScanID(root string, started time.Time) string {
+func AllocateScanID(root string, started time.Time) string {
 	sum := sha256.Sum256([]byte(root + "\n" + started.UTC().Format(time.RFC3339Nano)))
 	return fmt.Sprintf("scan-%s-%x", started.UTC().Format("20060102T150405Z"), sum[:4])
+}
+
+var scanIDPattern = regexp.MustCompile(`^scan-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$`)
+
+func ValidateScanID(scanID string) error {
+	if !scanIDPattern.MatchString(scanID) {
+		return fmt.Errorf("scan ID is empty or malformed")
+	}
+	return nil
 }
 
 func sourceSnippet(root, path string, start, end int) string {

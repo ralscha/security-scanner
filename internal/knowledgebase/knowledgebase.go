@@ -217,7 +217,7 @@ func VerifyDocument(document Document) error {
 	return nil
 }
 
-func readDocument(path string, maxBytes int64) (Document, error) {
+func readDocument(path string, maxBytes int64) (_ Document, err error) {
 	before, err := os.Lstat(path)
 	if err != nil {
 		return Document{}, fmt.Errorf("inspect knowledge-base document %s: %w", path, err)
@@ -232,7 +232,11 @@ func readDocument(path string, maxBytes int64) (Document, error) {
 	if err != nil {
 		return Document{}, fmt.Errorf("read knowledge-base document %s: %w", path, err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close knowledge-base document %s: %w", path, closeErr)
+		}
+	}()
 	opened, err := file.Stat()
 	if err != nil {
 		return Document{}, fmt.Errorf("inspect opened knowledge-base document %s: %w", path, err)

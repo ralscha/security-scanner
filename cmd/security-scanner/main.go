@@ -120,7 +120,7 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 	knowledgeBaseMaxDocuments := flags.Int("knowledge-base-max-documents", 100, "maximum knowledge-base documents")
 	knowledgeBaseMaxDocumentBytes := flags.Int64("knowledge-base-max-document-bytes", 2*1024*1024, "maximum bytes per knowledge-base document")
 	knowledgeBaseMaxTotalBytes := flags.Int64("knowledge-base-max-total-bytes", 10*1024*1024, "maximum aggregate normalized knowledge-base text")
-	maxFileBytes := flags.Int64("max-file-bytes", 1024*1024, "maximum reviewable file size")
+	maxFileBytes := flags.Int64("max-file-bytes", 0, "maximum reviewable file size; 0 is unlimited")
 	maxIterations := flags.Int("max-iterations", 80, "maximum reasoning iterations per agent")
 	maxAgentConcurrency := flags.Int("max-agent-concurrency", 4, "maximum concurrent model requests across agents")
 	maxDuration := flags.Duration("max-duration", 45*time.Minute, "overall scan timeout")
@@ -422,7 +422,7 @@ func runPreflight(args []string, stdout, stderr *checkedWriter) int {
 	diffRef := flags.String("diff", "", "validate files changed from a git revision")
 	workingTree := flags.Bool("working-tree", false, "validate working-tree target resolution")
 	archiveExisting := flags.Bool("archive-existing", false, "allow archival of existing output during the real scan")
-	maxFileBytes := flags.Int64("max-file-bytes", 1024*1024, "maximum reviewable file size")
+	maxFileBytes := flags.Int64("max-file-bytes", 0, "maximum reviewable file size; 0 is unlimited")
 	knowledgeBaseMaxDocuments := flags.Int("knowledge-base-max-documents", 100, "maximum knowledge-base documents")
 	knowledgeBaseMaxDocumentBytes := flags.Int64("knowledge-base-max-document-bytes", 2*1024*1024, "maximum bytes per knowledge-base document")
 	knowledgeBaseMaxTotalBytes := flags.Int64("knowledge-base-max-total-bytes", 10*1024*1024, "maximum aggregate normalized knowledge-base text")
@@ -801,7 +801,7 @@ func runRemediation(kind string, args []string, stdout, stderr *checkedWriter) i
 	apiVersion := flags.String("api-version", "", "provider API version")
 	authMode := flags.String("auth", "auto", "authentication mode: auto, env, api-key, or none")
 	maxOutputTokens := flags.Int("max-output-tokens", 0, "provider output-token limit")
-	maxFileBytes := flags.Int64("max-file-bytes", 1024*1024, "maximum reviewable file size")
+	maxFileBytes := flags.Int64("max-file-bytes", 0, "maximum reviewable file size; 0 is unlimited")
 	maxIterations := flags.Int("max-iterations", 40, "maximum reasoning iterations")
 	maxAgentConcurrency := flags.Int("max-agent-concurrency", 4, "maximum concurrent model requests")
 	requestTimeout := flags.Duration("request-timeout", 10*time.Minute, "timeout per model request")
@@ -922,7 +922,7 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 	apiVersion := flags.String("api-version", "", "provider API version")
 	authMode := flags.String("auth", "auto", "authentication mode: auto, env, api-key, or none")
 	maxOutputTokens := flags.Int("max-output-tokens", 0, "provider output-token limit")
-	maxFileBytes := flags.Int64("max-file-bytes", 1024*1024, "maximum reviewable file size")
+	maxFileBytes := flags.Int64("max-file-bytes", 0, "maximum reviewable file size; 0 is unlimited")
 	maxIterations := flags.Int("max-iterations", 80, "maximum reasoning iterations per agent")
 	maxAgentConcurrency := flags.Int("max-agent-concurrency", 4, "maximum concurrent model requests per repository")
 	requestTimeout := flags.Duration("request-timeout", 10*time.Minute, "timeout per model request")
@@ -964,7 +964,7 @@ func runBulkScan(args []string, stdout, stderr *checkedWriter) int {
 		return 2
 	}
 	inputPath := inputs[0]
-	if *outputDir == "" || *workers <= 0 || *retries < 0 || *maxScans < 0 || *retryDelay <= 0 || *maxAgentConcurrency <= 0 ||
+	if *outputDir == "" || *workers <= 0 || *retries < 0 || *maxScans < 0 || *maxFileBytes < 0 || *retryDelay <= 0 || *maxAgentConcurrency <= 0 ||
 		*maxAnalysisAttempts <= 0 || *analysisRetryBaseDelay <= 0 || *postScanMaxDuration <= 0 || *postScanMaxIterations <= 0 ||
 		*knowledgeBaseMaxDocuments <= 0 || *knowledgeBaseMaxDocumentBytes <= 0 || *knowledgeBaseMaxTotalBytes <= 0 {
 		stderr.Println("bulk-scan requires --output-dir, positive --workers, and non-negative retry/guardrail values")
@@ -1609,13 +1609,17 @@ func runInventory(args []string, stdout, stderr *checkedWriter) int {
 	flags.SetOutput(stderr)
 	var excludes stringListFlag
 	target := flags.String("target", ".", "repository directory to inventory")
-	maxFileBytes := flags.Int64("max-file-bytes", 1024*1024, "maximum reviewable file size")
+	maxFileBytes := flags.Int64("max-file-bytes", 0, "maximum reviewable file size; 0 is unlimited")
 	flags.Var(&excludes, "exclude", "repository-relative directory to exclude; repeatable")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() != 0 {
 		stderr.Println("inventory does not accept positional arguments; use --target")
+		return 2
+	}
+	if *maxFileBytes < 0 {
+		stderr.Println("inventory failed: --max-file-bytes cannot be negative")
 		return 2
 	}
 	inv, err := scan.BuildInventory(*target, scan.InventoryOptions{MaxFileBytes: *maxFileBytes, Excludes: excludes})

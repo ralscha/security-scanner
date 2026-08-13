@@ -6,6 +6,7 @@ Changes from the initial prototype:
 
 - Prefer `--output-dir`; `--out` remains an alias.
 - Default artifacts moved from `<target>/.scanner` to per-user scanner state.
+- Repository source files are no longer skipped above an implicit 1 MiB threshold. Use a positive `--max-file-bytes` value to retain an explicit cap; `0` is now unlimited.
 - Explicit single-scan output resolves to an absolute path and may be inside the target; the destination is excluded from inventory. Bulk output remains outside scanned worktrees.
 - Existing non-empty output requires `--archive-existing`.
 - Invalid input, runtime errors, preflight failures, and incomplete coverage return `2`; configured severity violations return `1`.

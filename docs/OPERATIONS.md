@@ -16,6 +16,8 @@ Bulk concurrency is bounded by `--workers`; retries use exponential backoff from
 
 Repository inventories include content digests for regular files. Repository tools reject files that change after inventory, and finalization rebuilds the original scoped inventory before and after snippet generation. A changed, added, or removed in-scope file makes the scan fail with exit `2` before artifacts are published.
 
+Repository source files have no size cap by default. `--max-file-bytes` remains available as an explicit operator guardrail; files above a positive configured value are recorded as skipped. Committed-diff scans require a clean, non-sparse checkout and compare the selected base revision with `HEAD`; use `--working-tree` for local changes.
+
 Knowledge-base inventories apply the same fail-closed principle. Text and Markdown sources reject symlinks, replacements, invalid UTF-8, NUL bytes, and configured count/size overruns. Source-byte digests attest content while CRLF is normalized for model reads. Knowledge-base text and repository text are untrusted data and cannot modify system instructions. PDF and DOCX inputs are currently rejected; the scanner never shells out to a converter.
 
 Protected VCS and scanner metadata is excluded whether represented as a directory or a control file. This keeps submodule and linked-worktree `.git` pointers out of model input, coverage, and persisted findings while retaining their nested source files.

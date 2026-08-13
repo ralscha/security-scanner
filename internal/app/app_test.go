@@ -69,6 +69,39 @@ func TestPrepareResolvesAndExcludesAbsoluteOutputInsideTarget(t *testing.T) {
 	}
 }
 
+func TestPrepareDoesNotImposeAnImplicitSourceSizeLimit(t *testing.T) {
+	root := t.TempDir()
+	large := filepath.Join(root, "large.go")
+	if err := os.WriteFile(large, []byte("package large\n/*"+strings.Repeat("x", 1024*1024)+"*/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := Prepare(Options{
+		Target:   root,
+		Provider: "ollama",
+		Model:    "test-model",
+		AuthMode: "none",
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.Inventory.Files) != 1 || !prepared.Inventory.Files[0].Reviewable {
+		t.Fatalf("large source file was implicitly skipped: %#v", prepared.Inventory.Files)
+	}
+}
+
+func TestPrepareRejectsNegativeSourceSizeLimit(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "app.go"), []byte("package app\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Prepare(Options{Target: root, MaxFileBytes: -1}, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "max file bytes cannot be negative") {
+		t.Fatalf("expected negative source size limit error, got %v", err)
+	}
+}
+
 func TestSamePath(t *testing.T) {
 	root := t.TempDir()
 	if !samePath(root, filepath.Join(root, ".")) {

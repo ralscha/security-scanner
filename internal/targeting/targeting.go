@@ -110,7 +110,18 @@ func gitPaths(ctx context.Context, root, mode, ref string) ([]string, error) {
 	}
 	var outputs [][]byte
 	if mode == "diff" {
-		output, err := runGit(ctx, gitRoot, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", ref, "--")
+		base, err := resolveGitCommit(ctx, gitRoot, ref)
+		if err != nil {
+			return nil, fmt.Errorf("resolve diff %q: %w", ref, err)
+		}
+		head, err := resolveGitCommit(ctx, gitRoot, "HEAD")
+		if err != nil {
+			return nil, fmt.Errorf("resolve checkout HEAD: %w", err)
+		}
+		if err := validateCommittedDiffCheckout(ctx, gitRoot); err != nil {
+			return nil, err
+		}
+		output, err := runGit(ctx, gitRoot, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", base, head, "--")
 		if err != nil {
 			return nil, fmt.Errorf("resolve diff %q: %w", ref, err)
 		}
@@ -127,6 +138,39 @@ func gitPaths(ctx context.Context, root, mode, ref string) ([]string, error) {
 		outputs = append(outputs, tracked, untracked)
 	}
 	return pathsUnderRoot(root, gitRoot, outputs), nil
+}
+
+func resolveGitCommit(ctx context.Context, gitRoot, ref string) (string, error) {
+	output, err := runGit(ctx, gitRoot, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	commit := strings.TrimSpace(string(output))
+	if commit == "" {
+		return "", fmt.Errorf("git returned an empty commit ID")
+	}
+	return commit, nil
+}
+
+func validateCommittedDiffCheckout(ctx context.Context, gitRoot string) error {
+	status, err := runGit(ctx, gitRoot, "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return fmt.Errorf("inspect committed-diff checkout: %w", err)
+	}
+	if len(status) != 0 {
+		return fmt.Errorf("committed-diff scans require a clean repository checkout; commit, stash, or remove local changes and retry")
+	}
+
+	tracked, err := runGit(ctx, gitRoot, "ls-files", "-t", "-z")
+	if err != nil {
+		return fmt.Errorf("inspect committed-diff checkout: %w", err)
+	}
+	for entry := range bytes.SplitSeq(tracked, []byte{0}) {
+		if bytes.HasPrefix(entry, []byte("S ")) {
+			return fmt.Errorf("committed-diff scans require a full repository checkout; sparse checkouts are not supported")
+		}
+	}
+	return nil
 }
 
 func pathsUnderRoot(root, gitRoot string, outputs [][]byte) []string {

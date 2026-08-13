@@ -176,8 +176,8 @@ func Run(ctx context.Context, opts Options) (*scan.Result, error) {
 	if opts.MaxAgentConcurrency == 0 {
 		opts.MaxAgentConcurrency = 4
 	}
-	if opts.MaxFileBytes <= 0 {
-		opts.MaxFileBytes = 1024 * 1024
+	if opts.MaxFileBytes < 0 {
+		return nil, fmt.Errorf("max file bytes cannot be negative")
 	}
 	if opts.MaxIterations <= 0 {
 		opts.MaxIterations = 80
@@ -703,8 +703,8 @@ func Prepare(opts Options, started time.Time) (*Preparation, error) {
 	if opts.OutputDir, err = output.Validate(context.Background(), absTarget, opts.OutputDir, opts.ArchiveExisting); err != nil {
 		return nil, err
 	}
-	if opts.MaxFileBytes <= 0 {
-		opts.MaxFileBytes = 1024 * 1024
+	if opts.MaxFileBytes < 0 {
+		return nil, fmt.Errorf("max file bytes cannot be negative")
 	}
 	resolvedModel, err := llm.DefaultRegistry().Resolve(llm.Config{
 		Provider:        opts.Provider,

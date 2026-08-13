@@ -141,7 +141,7 @@ Useful controls:
 
 ```text
 --exclude PATH          Repeatable repository-relative exclusion
---max-file-bytes N      Files above N are accounted for as skipped
+--max-file-bytes N      Files above N are accounted for as skipped; 0 is unlimited (default)
 --max-iterations N      Reasoning iterations available to each agent
 --max-agent-concurrency N Maximum concurrent model requests across all agents
 --max-output-tokens N   Provider response limit; 0 uses its default
@@ -172,12 +172,14 @@ Target a subset of a repository with exactly one selector mode:
 # One or more files/directories
 ./security-scanner scan --target /path/to/repo --path cmd --path internal/auth
 
-# Changes relative to a Git revision
+# Committed changes from a Git revision to the clean, full HEAD checkout
 ./security-scanner scan --target /path/to/repo --diff origin/main
 
 # Tracked modifications plus untracked files
 ./security-scanner scan --target /path/to/repo --working-tree
 ```
+
+Committed-diff scans reject dirty or sparse checkouts so the inventoried source is the requested committed HEAD. Use `--working-tree` when local tracked or untracked changes are intentionally in scope.
 
 Validate provider configuration and the resolved target without constructing or calling a model:
 

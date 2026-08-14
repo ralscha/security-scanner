@@ -366,11 +366,18 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 		event.Time = time.Now().UTC()
 		event.OuterJobMaxAttempts = config.MaxRetries + 1
 		event.InnerAnalysisMaxAttempts = config.InnerAnalysisMaxAttempts
-		if config.OnEvent != nil {
-			config.OnEvent(event)
-		}
+		notifyOptional(config.OnEvent, event)
 	}
 	var mu sync.Mutex
+	var progressMu sync.Mutex
+	notifyProgress := func(entry Entry) {
+		if config.Progress == nil {
+			return
+		}
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		notifyOptional(config.Progress, entry)
+	}
 	var persistenceErr error
 	persistLocked := func() {
 		receipt.UpdatedAt = time.Now().UTC()
@@ -391,10 +398,9 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 				persistLocked()
 				job := entry.Job
 				innerAttempts := entry.InnerAnalysisAttempts
-				if config.Progress != nil {
-					config.Progress(*entry)
-				}
+				progressEntry := *entry
 				mu.Unlock()
+				notifyProgress(progressEntry)
 				emit(Event{Type: "job_started", JobID: job.ID, Status: "running"})
 				var scanID string
 				var outcome Outcome
@@ -448,10 +454,9 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 				}
 				persistLocked()
 				status, message := entry.Status, entry.Error
-				if config.Progress != nil {
-					config.Progress(*entry)
-				}
+				progressEntry = *entry
 				mu.Unlock()
+				notifyProgress(progressEntry)
 				emit(Event{Type: "job_finished", JobID: job.ID, Status: status, Message: message})
 			}
 		})
@@ -487,6 +492,16 @@ func Run(ctx context.Context, jobs []Job, third, fourth any) (Receipt, error) {
 		return finished, nil
 	}
 	return finished, finishErr
+}
+
+// notifyOptional prevents an optional observer panic from changing scan state
+// or stopping the bulk campaign.
+func notifyOptional[T any](observer func(T), value T) {
+	if observer == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	observer(value)
 }
 
 func acquireSupervisorLock(receiptPath string) (*flock.Flock, error) {

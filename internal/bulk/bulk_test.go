@@ -183,6 +183,62 @@ func TestRunBoundsConcurrencyRetriesAndResumes(t *testing.T) {
 	}
 }
 
+func TestRunContinuesWhenOptionalObserversPanic(t *testing.T) {
+	jobs, err := BuildJobs([]string{t.TempDir(), t.TempDir()}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	var calls, eventCalls, progressCalls atomic.Int32
+	var progressActive, progressMaximum atomic.Int32
+	receipt, err := Run(context.Background(), jobs, func(_ context.Context, job Job) (string, error) {
+		calls.Add(1)
+		return "scan-" + job.ID, nil
+	}, Config{
+		Workers: 2, ReceiptPath: receiptPath,
+		OnEvent: func(Event) {
+			eventCalls.Add(1)
+			panic("optional event observer failed")
+		},
+		Progress: func(Entry) {
+			progressCalls.Add(1)
+			current := progressActive.Add(1)
+			defer progressActive.Add(-1)
+			for {
+				previous := progressMaximum.Load()
+				if current <= previous || progressMaximum.CompareAndSwap(previous, current) {
+					break
+				}
+			}
+			time.Sleep(time.Millisecond)
+			panic("optional progress observer failed")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != int32(len(jobs)) || receipt.Status != StatusCompleted {
+		t.Fatalf("observer panic changed scan outcome: calls=%d receipt=%#v", calls.Load(), receipt)
+	}
+	if eventCalls.Load() != int32(3*len(jobs)) || progressCalls.Load() != int32(2*len(jobs)) {
+		t.Fatalf("observer delivery stopped after panic: events=%d progress=%d", eventCalls.Load(), progressCalls.Load())
+	}
+	if progressMaximum.Load() != 1 {
+		t.Fatalf("progress observers were delivered concurrently: maximum=%d", progressMaximum.Load())
+	}
+	data, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted Receipt
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != StatusCompleted || len(persisted.Jobs) != len(jobs) {
+		t.Fatalf("observer panic changed persisted receipt: %#v", persisted)
+	}
+}
+
 func TestRunRejectsConcurrentSupervisorForReceipt(t *testing.T) {
 	jobs, err := BuildJobs([]string{t.TempDir()}, t.TempDir())
 	if err != nil {

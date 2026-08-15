@@ -160,8 +160,12 @@ func ValidateBoundary(ctx context.Context, target, destination string) error {
 	if err != nil {
 		return err
 	}
-	if inside {
-		return fmt.Errorf("output directory must be outside scanned root and enclosing worktree: %s", boundary)
+	containsTarget, err := isWithin(absDestination, boundary)
+	if err != nil {
+		return err
+	}
+	if inside || containsTarget {
+		return fmt.Errorf("output directory and scanned root or enclosing worktree must be disjoint: %s", boundary)
 	}
 	return nil
 }
@@ -424,11 +428,9 @@ func worktreeRoot(ctx context.Context, target string) string {
 	if err != nil {
 		return target
 	}
-	environment := trustedexec.WithoutVariables(git.Env,
-		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-		"GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS",
-	)
-	command := exec.CommandContext(ctx, git.Path, "-C", target, "rev-parse", "--show-toplevel")
+	environment := trustedexec.GitEnvironment(git.Env, true)
+	environment = trustedexec.WithoutVariables(environment, "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS")
+	command := exec.CommandContext(ctx, git.Path, "-c", "core.fsmonitor=false", "-C", target, "rev-parse", "--show-toplevel")
 	command.Env = append(environment, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	output, err := command.Output()
 	if err != nil {
@@ -442,6 +444,10 @@ func worktreeRoot(ctx context.Context, target string) string {
 }
 
 func isWithin(root, candidate string) (bool, error) {
+	rootVolume, candidateVolume := filepath.VolumeName(root), filepath.VolumeName(candidate)
+	if !strings.EqualFold(rootVolume, candidateVolume) {
+		return false, nil
+	}
 	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(candidate))
 	if err != nil {
 		return false, fmt.Errorf("compare output directory with worktree: %w", err)

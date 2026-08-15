@@ -153,7 +153,7 @@ func resolveGitCommit(ctx context.Context, gitRoot, ref string) (string, error) 
 }
 
 func validateCommittedDiffCheckout(ctx context.Context, gitRoot string) error {
-	status, err := runGit(ctx, gitRoot, "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := runGit(ctx, gitRoot, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("inspect committed-diff checkout: %w", err)
 	}
@@ -204,11 +204,10 @@ func runGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	environment := trustedexec.WithoutVariables(git.Env,
-		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-		"GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS",
-	)
-	commandArgs := append([]string{"-C", dir}, args...)
+	preserveConfiguration := len(args) > 0 && args[0] == "rev-parse"
+	environment := trustedexec.GitEnvironment(git.Env, preserveConfiguration)
+	environment = trustedexec.WithoutVariables(environment, "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS")
+	commandArgs := append([]string{"-c", "core.fsmonitor=false", "-C", dir}, args...)
 	command := exec.CommandContext(ctx, git.Path, commandArgs...)
 	command.Env = append(environment, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	output, err := command.Output()

@@ -1,12 +1,23 @@
 package knowledgebase
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestPrepareContextHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := PrepareContext(ctx, []string{t.TempDir()}, Options{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error = %v", err)
+	}
+}
 
 func TestPrepareDiscoversNormalizesDeduplicatesAndVerifies(t *testing.T) {
 	root := t.TempDir()

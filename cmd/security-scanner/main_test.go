@@ -48,6 +48,21 @@ func TestOutputFailureUsesRuntimeExitCode(t *testing.T) {
 	}
 }
 
+func TestScanTerminalReportingFailureIsNonfatal(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	code := run([]string{"scan", "--dry-run", "--target", root, "--provider", "ollama", "--model", "test", "--auth", "none"}, &stdout, errorWriter{})
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if !json.Valid(stdout.Bytes()) {
+		t.Fatalf("dry-run output is invalid: %s", stdout.String())
+	}
+}
+
 type errorWriter struct{}
 
 func (errorWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
@@ -686,6 +701,10 @@ func TestResolvePromptOverride(t *testing.T) {
 	}
 	if _, err := resolvePromptOverride("", invalidUTF8, "follow-up"); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
 		t.Fatalf("expected UTF-8 prompt error, got %v", err)
+	}
+
+	if _, err := resolvePromptOverride("", t.TempDir(), "scan"); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected non-regular prompt error, got %v", err)
 	}
 }
 

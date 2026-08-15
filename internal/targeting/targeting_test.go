@@ -96,6 +96,16 @@ func TestResolveGitDiffTreatsRevisionAsData(t *testing.T) {
 	}
 }
 
+func TestResolveGitDiffIgnoresRepositoryEnvironmentOverrides(t *testing.T) {
+	root, base := newTestGitRepository(t)
+	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "missing-git-dir"))
+	t.Setenv("GIT_WORK_TREE", filepath.Join(t.TempDir(), "missing-work-tree"))
+	t.Setenv("GIT_SHALLOW_FILE", filepath.Join(t.TempDir(), "missing-shallow-file"))
+	if _, err := Resolve(context.Background(), root, Selector{DiffRef: base}); err != nil {
+		t.Fatalf("repository override affected diff resolution: %v", err)
+	}
+}
+
 func newTestGitRepository(t *testing.T) (string, string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {

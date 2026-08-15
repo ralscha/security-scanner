@@ -28,6 +28,7 @@ import (
 	"security-scanner/internal/preflight"
 	"security-scanner/internal/redact"
 	"security-scanner/internal/remediation"
+	"security-scanner/internal/safeinput"
 	"security-scanner/internal/scan"
 	"security-scanner/internal/targeting"
 	"security-scanner/internal/triage"
@@ -43,10 +44,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	checkedStdout := &checkedWriter{writer: stdout}
 	checkedStderr := &checkedWriter{writer: redact.Writer(stderr)}
 	code := runCommand(args, checkedStdout, checkedStderr)
-	if checkedStdout.Err() != nil || checkedStderr.Err() != nil {
+	if checkedStdout.Err() != nil || (checkedStderr.Err() != nil && !optionalTerminalReporting(args)) {
 		return 2
 	}
 	return code
+}
+
+func optionalTerminalReporting(args []string) bool {
+	return len(args) > 0 && (args[0] == "scan" || args[0] == "bulk-scan")
 }
 
 func runCommand(args []string, stdout, stderr *checkedWriter) int {
@@ -299,7 +304,7 @@ func runScan(args []string, stdout, stderr *checkedWriter) int {
 		Progress: progress,
 	}
 	if *dryRun {
-		prepared, err := app.Prepare(options, time.Now().UTC())
+		prepared, err := app.PrepareContext(ctx, options, time.Now().UTC())
 		if err != nil {
 			diagnostic.Log("scan.failed", map[string]any{"classification": "preflight"})
 			emitTerminalProgress("scan failed", "failed")
@@ -845,7 +850,7 @@ func runRemediation(kind string, args []string, stdout, stderr *checkedWriter) i
 		ctx, cancel = context.WithTimeout(ctx, *maxDuration)
 		defer cancel()
 	}
-	prepared, err := app.Prepare(app.Options{
+	prepared, err := app.PrepareContext(ctx, app.Options{
 		Target: *target, Provider: *provider, Model: *modelName, APIKey: *apiKey, BaseURL: *baseURL,
 		APIVersion: *apiVersion, AuthMode: *authMode, MaxOutputTokens: *maxOutputTokens, MaxFileBytes: *maxFileBytes,
 		RequestTimeout: *requestTimeout,
@@ -1319,7 +1324,7 @@ func resolvePromptOverride(inlineValue, filePath, promptKind string) (string, er
 		}
 		return inline, nil
 	}
-	content, err := os.ReadFile(path)
+	content, err := safeinput.ReadRegularFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read --%s-prompt-file: %w", promptKind, err)
 	}

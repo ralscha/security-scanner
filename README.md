@@ -18,7 +18,7 @@ Provider construction is isolated in a registry. The scanner includes Eino adapt
 
 Go code owns the security boundary and final output:
 
-- The inventory honors root and nested `.gitignore` rules, and excludes VCS metadata, dependency/build directories, `.scanner`, and explicit `--exclude` paths. An exact `--path` selection overrides ignore and default dependency/build exclusions, but never VCS metadata, `.scanner`, the output directory, or `--exclude`.
+- The inventory honors root and nested `.gitignore` rules, and excludes VCS metadata, dependency/build directories, `.scanner`, and explicit `--exclude` paths. An exact `--path` selection overrides ignore and default dependency/build exclusions, but never VCS metadata, `.scanner`, or `--exclude`.
 - Symlinks and non-regular filesystem entries are inventoried as skipped. Content digests are checked on every read and again before artifacts are published, so changed targets fail closed.
 - Full-file coverage is measured from actual `read_file` line ranges. Search results do not count as review.
 - `submit_scan` rejects unknown files, invalid lines, malformed CWE values, and incomplete finding fields.
@@ -239,7 +239,7 @@ Each scan writes:
 
 When configured and completed, the advisory pass additionally writes `post-scan.json` and `post-scan.md`. These fixed filenames are intentionally absent from the canonical manifest. If primary analysis fails, only private operational state and the activity log are retained; no findings, coverage, report, SARIF, or manifest is fabricated.
 
-By default, artifacts are written below the per-user scanner state directory. An explicit `--output-dir` is resolved to an absolute, canonical path and may be anywhere except the scan target itself. A destination inside the target is excluded from the fixed file inventory. Scan directories and artifacts are private to the current operating-system user: POSIX output directories must use mode `0700` and have trusted, non-writable ancestry; Windows output receives a protected current-user-only ACL. A non-empty destination is rejected unless `--archive-existing` is supplied; in that case it is atomically renamed to a timestamped sibling before the new scan starts. Bulk scan output must remain outside every scanned worktree to keep concurrent inventories isolated.
+By default, artifacts are written below the per-user scanner state directory. An explicit `--output-dir` is resolved to an absolute, canonical path and must be disjoint from the scan target and its enclosing Git worktree: it may neither be inside that tree nor contain it. Scan directories and artifacts are private to the current operating-system user: POSIX output directories must use mode `0700` and have trusted, non-writable ancestry; Windows output receives a protected current-user-only ACL. A non-empty destination is rejected unless `--archive-existing` is supplied; in that case it is atomically renamed to a timestamped sibling before the new scan starts. Bulk scan output follows the same boundary so concurrent inventories remain isolated.
 
 A scan is `completed` only when every reviewable text file was read from start to finish. Otherwise it is `completed_with_gaps`, and all unread files are listed.
 

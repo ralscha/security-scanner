@@ -61,10 +61,14 @@ func trustedPathEntries(root string) []string {
 	entries := make([]string, 0)
 	seen := make(map[string]struct{})
 	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
-		if entry == "" || !filepath.IsAbs(entry) {
+		if entry == "" {
 			continue
 		}
-		canonical, err := filepath.EvalSymlinks(entry)
+		absolute, err := filepath.Abs(entry)
+		if err != nil {
+			continue
+		}
+		canonical, err := filepath.EvalSymlinks(absolute)
 		if err != nil || within(root, canonical) {
 			continue
 		}
@@ -79,6 +83,33 @@ func trustedPathEntries(root string) []string {
 		entries = append(entries, canonical)
 	}
 	return entries
+}
+
+var gitRepositoryEnvironment = map[string]struct{}{
+	"GIT_DIR": {}, "GIT_WORK_TREE": {}, "GIT_INDEX_FILE": {}, "GIT_OBJECT_DIRECTORY": {},
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": {}, "GIT_COMMON_DIR": {}, "GIT_REPLACE_REF_BASE": {},
+	"GIT_CEILING_DIRECTORIES": {}, "GIT_DISCOVERY_ACROSS_FILESYSTEM": {}, "GIT_GRAFT_FILE": {},
+	"GIT_IMPLICIT_WORK_TREE": {}, "GIT_NAMESPACE": {}, "GIT_NO_REPLACE_OBJECTS": {},
+	"GIT_PREFIX": {}, "GIT_SHALLOW_FILE": {},
+}
+
+// GitEnvironment removes repository redirection and protocol overrides from a
+// child environment. Configuration is retained only for metadata-only Git
+// commands such as rev-parse; repository-reading commands receive no GIT_*
+// configuration so hooks and filters cannot inherit credentials.
+func GitEnvironment(environment []string, preserveConfiguration bool) []string {
+	result := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		key, _, _ := strings.Cut(entry, "=")
+		normalized := strings.ToUpper(key)
+		_, repositoryOverride := gitRepositoryEnvironment[normalized]
+		if repositoryOverride || normalized == "GIT_ALLOW_PROTOCOL" ||
+			(!preserveConfiguration && strings.HasPrefix(normalized, "GIT_")) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return append(result, "GIT_ALLOW_PROTOCOL=")
 }
 
 func candidateNames(name string) []string {

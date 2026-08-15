@@ -3,6 +3,7 @@ package output
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -10,10 +11,50 @@ import (
 	"time"
 )
 
-func TestValidateAllowsOutputInsideTarget(t *testing.T) {
+func TestValidateDefersTargetBoundaryPolicy(t *testing.T) {
 	root := t.TempDir()
 	if _, err := Validate(context.Background(), root, filepath.Join(root, "reports"), false); err != nil {
 		t.Fatalf("validate output inside target: %v", err)
+	}
+}
+
+func TestValidateBoundaryRequiresDisjointPaths(t *testing.T) {
+	parent := t.TempDir()
+	target := filepath.Join(parent, "repository")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, destination := range map[string]string{
+		"inside":   filepath.Join(target, "reports"),
+		"ancestor": parent,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateBoundary(context.Background(), target, destination); err == nil || !strings.Contains(err.Error(), "disjoint") {
+				t.Fatalf("boundary error = %v", err)
+			}
+		})
+	}
+	if err := ValidateBoundary(context.Background(), target, filepath.Join(t.TempDir(), "reports")); err != nil {
+		t.Fatalf("disjoint output rejected: %v", err)
+	}
+}
+
+func TestValidateBoundaryProtectsEnclosingWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is unavailable")
+	}
+	worktree := t.TempDir()
+	command := exec.Command("git", "-C", worktree, "init")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	target := filepath.Join(worktree, "service")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := ValidateBoundary(context.Background(), target, filepath.Join(worktree, "reports"))
+	if err == nil || !strings.Contains(err.Error(), "disjoint") {
+		t.Fatalf("enclosing worktree boundary error = %v", err)
 	}
 }
 

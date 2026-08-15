@@ -1,6 +1,6 @@
 # Capability Matrix
 
-This matrix is the implementation contract for the parity roadmap. A capability is complete only when its command behavior, negative paths, documentation, and tests exist. The pre-release artifact contract starts at schema version `1`; no migration history is maintained before deployment.
+This matrix is the implementation contract for the parity roadmap. A capability is complete only when its command behavior, negative paths, documentation, and tests exist. The unreleased artifact contract uses schema version `1`.
 
 | Capability | CLI/API | Status | Evidence |
 | --- | --- | --- | --- |

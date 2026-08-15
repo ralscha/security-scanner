@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"security-scanner/internal/history"
+	"security-scanner/internal/safeinput"
 	"security-scanner/internal/scan"
 	"security-scanner/internal/triage"
 )
@@ -25,8 +26,13 @@ func ResolveInput(specification, explicitTarget string) (Input, error) {
 	if strings.HasPrefix(specification, "scan-") && strings.Contains(specification, ":") {
 		return resolveOccurrence(specification)
 	}
-	if info, err := os.Stat(specification); err == nil && !info.IsDir() {
+	if info, err := os.Lstat(specification); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return Input{}, fmt.Errorf("finding input must be a non-symlink regular file: %s", specification)
+		}
 		return resolveArtifact(specification, explicitTarget)
+	} else if !os.IsNotExist(err) {
+		return Input{}, fmt.Errorf("inspect finding input: %w", err)
 	}
 	if strings.TrimSpace(explicitTarget) == "" {
 		explicitTarget = "."
@@ -61,7 +67,7 @@ func resolveOccurrence(occurrenceID string) (Input, error) {
 }
 
 func resolveArtifact(path, explicitTarget string) (Input, error) {
-	data, err := os.ReadFile(path)
+	data, err := safeinput.ReadRegularFile(path)
 	if err != nil {
 		return Input{}, fmt.Errorf("read findings input: %w", err)
 	}
@@ -75,7 +81,7 @@ func resolveArtifact(path, explicitTarget string) (Input, error) {
 	target := strings.TrimSpace(explicitTarget)
 	if target == "" {
 		var manifest scan.ScanManifest
-		manifestData, err := os.ReadFile(filepath.Join(filepath.Dir(path), "scan-manifest.json"))
+		manifestData, err := safeinput.ReadRegularFile(filepath.Join(filepath.Dir(path), "scan-manifest.json"))
 		if err != nil {
 			return Input{}, fmt.Errorf("resolve target from adjacent scan-manifest.json: %w", err)
 		}

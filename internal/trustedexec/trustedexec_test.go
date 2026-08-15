@@ -39,7 +39,7 @@ func TestResolveSkipsProtectedPathEntries(t *testing.T) {
 	}
 }
 
-func TestResolveRejectsRelativePathEntries(t *testing.T) {
+func TestResolveRejectsProtectedRelativePathEntries(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
 	if err := os.Mkdir("bin", 0o755); err != nil {
@@ -51,6 +51,53 @@ func TestResolveRejectsRelativePathEntries(t *testing.T) {
 	t.Setenv("PATH", "bin")
 	if _, err := Resolve("git", root); err == nil {
 		t.Fatal("relative PATH entry was trusted")
+	}
+}
+
+func TestResolveAcceptsSafeRelativePathEntries(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	trustedBin := filepath.Join(root, "trusted")
+	if err := os.Mkdir(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(trustedBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(trustedBin, executableName("git"))
+	if err := os.WriteFile(executable, []byte("test executable"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	t.Setenv("PATH", "trusted")
+	resolved, err := Resolve("git", repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Path != want || !filepath.IsAbs(resolved.Path) {
+		t.Fatalf("resolved path = %q, want %q", resolved.Path, want)
+	}
+}
+
+func TestGitEnvironmentScopesConfiguration(t *testing.T) {
+	environment := []string{
+		"KEEP=ok", "GIT_DIR=unsafe", "git_shallow_file=unsafe", "GIT_ALLOW_PROTOCOL=ext",
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.extraHeader", "GIT_CONFIG_VALUE_0=secret",
+	}
+	preserved := GitEnvironment(environment, true)
+	if environmentValue(preserved, "KEEP") != "ok" || environmentValue(preserved, "GIT_CONFIG_COUNT") != "1" {
+		t.Fatalf("safe configuration was not preserved: %#v", preserved)
+	}
+	if environmentValue(preserved, "GIT_DIR") != "" || environmentValue(preserved, "GIT_SHALLOW_FILE") != "" || environmentValue(preserved, "GIT_ALLOW_PROTOCOL") != "" {
+		t.Fatalf("repository or protocol override survived: %#v", preserved)
+	}
+	isolated := GitEnvironment(environment, false)
+	if environmentValue(isolated, "KEEP") != "ok" || environmentValue(isolated, "GIT_CONFIG_COUNT") != "" || environmentValue(isolated, "GIT_CONFIG_VALUE_0") != "" {
+		t.Fatalf("Git configuration was exposed: %#v", isolated)
 	}
 }
 

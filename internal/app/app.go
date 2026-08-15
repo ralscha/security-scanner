@@ -209,7 +209,7 @@ func Run(ctx context.Context, opts Options) (*scan.Result, error) {
 	if opts.PostScanFailureMode != "warn" && opts.PostScanFailureMode != "fail" {
 		return nil, fmt.Errorf("post-scan failure mode must be warn or fail")
 	}
-	prepared, err := Prepare(opts, started)
+	prepared, err := PrepareContext(ctx, opts, started)
 	if err != nil {
 		return nil, err
 	}
@@ -675,6 +675,18 @@ func durationString(duration time.Duration) string {
 
 // Prepare validates a scan and freezes its inventory without constructing or calling a model.
 func Prepare(opts Options, started time.Time) (*Preparation, error) {
+	return PrepareContext(context.Background(), opts, started)
+}
+
+// PrepareContext validates a scan and freezes its inventory while honoring
+// cancellation during filesystem discovery.
+func PrepareContext(ctx context.Context, opts Options, started time.Time) (*Preparation, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if opts.Target == "" {
 		opts.Target = "."
 	}
@@ -700,7 +712,10 @@ func Prepare(opts Options, started time.Time) (*Preparation, error) {
 	if err := rejectOutputSymlinks(absTarget, opts.OutputDir); err != nil {
 		return nil, err
 	}
-	if opts.OutputDir, err = output.Validate(context.Background(), absTarget, opts.OutputDir, opts.ArchiveExisting); err != nil {
+	if opts.OutputDir, err = output.Validate(ctx, absTarget, opts.OutputDir, opts.ArchiveExisting); err != nil {
+		return nil, err
+	}
+	if err := output.ValidateBoundary(ctx, absTarget, opts.OutputDir); err != nil {
 		return nil, err
 	}
 	if opts.MaxFileBytes < 0 {
@@ -747,7 +762,7 @@ func Prepare(opts Options, started time.Time) (*Preparation, error) {
 		if opts.Progress != nil {
 			opts.Progress("building fixed knowledge-base inventory")
 		}
-		preparedKnowledge, err = knowledgebase.Prepare(opts.KnowledgeBasePaths, knowledgeOptions)
+		preparedKnowledge, err = knowledgebase.PrepareContext(ctx, opts.KnowledgeBasePaths, knowledgeOptions)
 		if err != nil {
 			return nil, err
 		}

@@ -4,6 +4,7 @@ package knowledgebase
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -73,6 +74,18 @@ func NormalizeOptions(options Options) (Options, error) {
 }
 
 func Prepare(paths []string, options Options) (*Prepared, error) {
+	return PrepareContext(context.Background(), paths, options)
+}
+
+// PrepareContext prepares a knowledge base while allowing recursive discovery
+// to stop promptly when the scan is canceled.
+func PrepareContext(ctx context.Context, paths []string, options Options) (*Prepared, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	options, err := NormalizeOptions(options)
 	if err != nil {
 		return nil, err
@@ -84,6 +97,9 @@ func Prepare(paths []string, options Options) (*Prepared, error) {
 	candidates := make([]string, 0)
 	seenRoots := make(map[string]struct{})
 	for _, supplied := range paths {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		resolved, err := resolveRoot(supplied)
 		if err != nil {
 			return nil, err
@@ -110,6 +126,9 @@ func Prepare(paths []string, options Options) (*Prepared, error) {
 		case info.IsDir():
 			found := 0
 			err := filepath.WalkDir(resolved, func(path string, entry fs.DirEntry, walkErr error) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				if walkErr != nil {
 					return walkErr
 				}
@@ -155,6 +174,9 @@ func Prepare(paths []string, options Options) (*Prepared, error) {
 	seenFiles := make(map[string]struct{})
 	var total int64
 	for _, path := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		canonical, err := filepath.EvalSymlinks(path)
 		if err != nil {
 			return nil, fmt.Errorf("resolve knowledge-base document %s: %w", path, err)

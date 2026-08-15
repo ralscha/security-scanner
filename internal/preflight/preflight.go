@@ -25,8 +25,8 @@ type Result struct {
 	Checks                 []Check `json:"checks"`
 }
 
-func Run(_ context.Context, opts app.Options) Result {
-	prepared, err := app.Prepare(opts, time.Now().UTC())
+func Run(ctx context.Context, opts app.Options) Result {
+	prepared, err := app.PrepareContext(ctx, opts, time.Now().UTC())
 	if err != nil {
 		return Result{Checks: []Check{{Name: "configuration", Status: "error", Message: redact.Text(err.Error())}}}
 	}

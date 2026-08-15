@@ -35,37 +35,21 @@ func TestRejectOutputSymlinksInsideTarget(t *testing.T) {
 	}
 }
 
-func TestPrepareResolvesAndExcludesAbsoluteOutputInsideTarget(t *testing.T) {
+func TestPrepareRejectsOutputInsideTarget(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "app.go"), []byte("package app\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	outputDir := filepath.Join(root, "reports")
-	if err := os.MkdirAll(outputDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(outputDir, "stale.txt"), []byte("old\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	prepared, err := Prepare(Options{
-		Target:          root,
-		OutputDir:       outputDir,
-		Provider:        "ollama",
-		Model:           "test-model",
-		AuthMode:        "none",
-		ArchiveExisting: true,
+	_, err := Prepare(Options{
+		Target:    root,
+		OutputDir: outputDir,
+		Provider:  "ollama",
+		Model:     "test-model",
+		AuthMode:  "none",
 	}, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !filepath.IsAbs(prepared.OutputDir) || prepared.OutputDir != outputDir {
-		t.Fatalf("output directory = %q, want absolute %q", prepared.OutputDir, outputDir)
-	}
-	for _, file := range prepared.Inventory.Files {
-		if file.Path == "reports/stale.txt" {
-			t.Fatal("output directory was included in the scan inventory")
-		}
+	if err == nil || !strings.Contains(err.Error(), "must be disjoint") {
+		t.Fatalf("output boundary error = %v", err)
 	}
 }
 

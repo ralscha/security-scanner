@@ -49,6 +49,9 @@ func TestFinalizeWritesContractAndSARIF(t *testing.T) {
 	if result.Manifest.Status != "completed" || result.Manifest.FindingCount != 1 {
 		t.Fatalf("unexpected manifest: %#v", result.Manifest)
 	}
+	if len(result.Manifest.ArtifactDigests) != 4 || !strings.HasPrefix(result.Manifest.ArtifactDigests["findings.json"], "sha256:") || result.Manifest.ArtifactDigests["scan-log.jsonl"] != "" {
+		t.Fatalf("canonical artifact digests missing: %#v", result.Manifest.ArtifactDigests)
+	}
 	for _, name := range []string{"findings.json", "coverage.json", "report.md", "results.sarif", "scan-log.jsonl", "scan-manifest.json"} {
 		if _, err := os.Stat(filepath.Join(out, name)); err != nil {
 			t.Errorf("artifact %s: %v", name, err)

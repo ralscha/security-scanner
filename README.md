@@ -229,7 +229,7 @@ To inspect scope without making model calls:
 
 Each scan writes:
 
-- `scan-manifest.json`: scan identity, status, timestamps, provider/model, counts, and artifact paths.
+- `scan-manifest.json`: scan identity, status, timestamps, provider/model, counts, artifact paths, and SHA-256 digests sealing every canonical artifact.
 - `findings.json`: threat model and normalized findings.
 - `coverage.json`: one outcome for every inventoried file.
 - `report.md`: human-readable report derived from the canonical documents.
@@ -260,6 +260,13 @@ Scan sessions are indexed in the per-user scanner state directory before analysi
 
 Commands that accept a saved scan ID also accept any unique prefix. Ambiguous
 prefixes are rejected and list the matching scan IDs.
+
+From a repository root, `scans`, `findings`, `scans show`, `scans logs`, and
+`scans rerun` use their natural list/latest default when the subcommand or scan
+ID is omitted. `scans compare` uses the two latest completed scans when both
+IDs are omitted, or compares an explicit earlier scan with the latest completed
+scan when only one ID is supplied. Missing or damaged saved outputs are not
+selected as completed-scan defaults.
 
 New scans save their launch configuration, excluding API keys, so reruns retain
 authentication mode, provider endpoint, target scope, exclusions, threat-model
@@ -295,6 +302,67 @@ Validate a stored finding occurrence, an entire `findings.json` artifact, or an 
 ```bash
 ./security-scanner patch --export "$HOME/security-reports/proposal.json" "SCAN_ID:FINDING_ID"
 ```
+
+`patch` can also import read-only remediation requests from Linear. Select
+individual issues by identifier or `linear.app` URL, or all matching issues in
+one exactly named project. Project intake excludes completed and canceled
+issues unless `--linear-filter` supplies its own `state` filter:
+
+```bash
+export CODEX_SECURITY_LINEAR_API_KEY="..."
+./security-scanner patch --target /path/to/repo \
+  --linear-issue SEC-123 --linear-issue SEC-456
+
+./security-scanner patch --target /path/to/repo \
+  --linear-project "Security backlog" \
+  --linear-filter '{"priority":{"lte":2}}'
+```
+
+Credential precedence is `--linear-api-key`,
+`CODEX_SECURITY_LINEAR_API_KEY`, `LINEAR_API_KEY`, then
+`LINEAR_ACCESS_TOKEN`. Imported issue titles and descriptions are untrusted
+requests; the reviewer must verify them against the explicitly selected local
+repository before proposing changes.
+
+## Publish Completed Scans To Linear
+
+Publish every canonical finding from a completed saved scan as a separate
+Linear issue:
+
+```bash
+export CODEX_SECURITY_LINEAR_API_KEY="..."
+./security-scanner publish scan SCAN_ID \
+  --to linear --linear-team TEAM_ID
+```
+
+`SCAN_ID` may be an exact ID, unique prefix, or the private scan directory.
+Omitting it selects the latest valid completed scan for the current repository
+and reports that selection before publication. Use `--linear-project PROJECT_ID`
+(or its `--project` alias) to attach issues to a project, and
+`--linear-assignee EMAIL_OR_USER_ID` to assign them. Team and project defaults
+may be supplied by `CODEX_SECURITY_LINEAR_TEAM` and
+`CODEX_SECURITY_LINEAR_PROJECT`.
+
+Unlike the TypeScript upstream's optional Codex connected-app route, this Go
+port publishes directly through Linear's API and therefore requires
+`CODEX_SECURITY_LINEAR_API_KEY` or `--linear-api-key`. `--dry-run` is the
+exception: it validates and renders every issue without contacting Linear or
+writing publication state.
+
+Issue titles use `[Codex Security][HIGH] Finding title`. Descriptions preserve
+the scan/finding/occurrence IDs, repository and scope, coverage, timestamps,
+severity, confidence, CWE classifications, affected locations and snippets,
+impact, attack path, evidence, and remediation. Severity maps to Linear
+priority 1 through 4; informational findings have no explicit priority.
+
+Creation runs concurrently in sequential batches of at most 20. Individual
+Linear rejections are retained in the structured result without discarding
+successful issues. Private, atomically updated handoffs protect completed
+mutations during interruption or persistence failure; successful runs write a
+separate receipt below the scanner state directory and remove the temporary
+handoff. Running publication again intentionally creates a new set of issues.
+Publication data contains source snippets and vulnerability details, so the
+Linear destination and local receipts must be handled like source code.
 
 ## Preflight And Bulk Scans
 

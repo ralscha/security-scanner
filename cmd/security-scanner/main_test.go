@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"security-scanner/internal/history"
+	linearapi "security-scanner/internal/linear"
+	"security-scanner/internal/publication"
 	"security-scanner/internal/scan"
 )
 
@@ -410,7 +412,7 @@ func TestHelpListsRoadmapCommands(t *testing.T) {
 	if code := run([]string{"help"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	for _, command := range []string{"scan preflight", "bulk-scan", "scans <list|show|logs|rerun|match|compare>", "findings list", "findings false-positive", "validate", "patch"} {
+	for _, command := range []string{"scan preflight", "bulk-scan", "scans [list|show|logs|rerun|match|compare]", "findings list", "findings false-positive", "publish scan", "validate", "patch"} {
 		if !strings.Contains(stdout.String(), command) {
 			t.Errorf("help does not contain %q:\n%s", command, stdout.String())
 		}
@@ -471,7 +473,7 @@ func TestPreflightJSONRedactsCredentialsInTargetErrors(t *testing.T) {
 }
 
 func TestLifecycleAndBulkCommandsValidateArguments(t *testing.T) {
-	for _, args := range [][]string{{"scans"}, {"bulk-scan"}, {"findings", "false-positive", "F-1"}} {
+	for _, args := range [][]string{{"bulk-scan"}, {"findings", "false-positive", "F-1"}} {
 		var stdout, stderr bytes.Buffer
 		if code := run(args, &stdout, &stderr); code != 2 {
 			t.Errorf("%v exit = %d, stderr = %s", args, code, stderr.String())
@@ -583,6 +585,135 @@ func TestFindingsListShowsSavedRepositoryFindings(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &decision); err != nil || decision.OccurrenceID != result.Manifest.ScanID+":"+result.Findings.Findings[0].ID {
 		t.Fatalf("triage did not canonicalize occurrence: %s, %v", stdout.String(), err)
 	}
+}
+
+func TestSavedScanShortcutsUseLatestCurrentRepositoryScans(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("SECURITY_SCANNER_STATE_DIR", state)
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "app.go"), []byte("package app\n\nfunc run() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(target)
+	first := saveShortcutScan(t, state, target, time.Unix(100, 0), "First finding")
+	second := saveShortcutScan(t, state, target, time.Unix(200, 0), "Second finding")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"scans", "--json"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), second.Manifest.ScanID) {
+		t.Fatalf("default scans list exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"scans", "show"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), second.Manifest.ScanID) {
+		t.Fatalf("default scans show exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"scans", "logs", "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("default scans logs exit=%d stderr=%s", code, stderr.String())
+	}
+	var log history.ScanLog
+	if err := json.Unmarshal(stdout.Bytes(), &log); err != nil || log.ScanID != second.Manifest.ScanID {
+		t.Fatalf("latest log = %s, %v", stdout.String(), err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"scans", "compare", "--json"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), first.Manifest.ScanID) || !strings.Contains(stdout.String(), second.Manifest.ScanID) {
+		t.Fatalf("default compare exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"findings", "--json"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "Second finding") {
+		t.Fatalf("default findings list exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestPublishScanDryRunUsesSealedHistoryWithoutLinearCredentials(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("SECURITY_SCANNER_STATE_DIR", state)
+	t.Setenv("CODEX_SECURITY_LINEAR_API_KEY", "")
+	t.Setenv("CODEX_SECURITY_LINEAR_TEAM", "")
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "app.go"), []byte("package app\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(target)
+	saved := saveShortcutScan(t, state, target, time.Unix(300, 0), "Publish finding")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"publish", "scan", saved.OutDir, "--to", "linear", "--linear-team", "team-1", "--dry-run", "--json",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var result publication.Result
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.DryRun || result.ScanID != saved.Manifest.ScanID || len(result.Issues) != 1 || result.Issues[0].Priority != 2 {
+		t.Fatalf("result = %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(state, "publications")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry run wrote publication state: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"publish", "scan", saved.Manifest.ScanID, "--to", "linear", "--linear-team", "team-1"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "requires --linear-api-key") {
+		t.Fatalf("missing-key exit=%d stderr=%s", code, stderr.String())
+	}
+}
+
+func TestLinearPatchIntakeValidationAndRendering(t *testing.T) {
+	t.Setenv("CODEX_SECURITY_LINEAR_API_KEY", "")
+	t.Setenv("LINEAR_API_KEY", "")
+	t.Setenv("LINEAR_ACCESS_TOKEN", "")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"patch", "--linear-issue", "SEC-123", "--target", t.TempDir()}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "Linear access requires") {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	input := renderLinearPatchInput([]linearapi.Issue{{
+		Identifier: "SEC-123", URL: "https://linear.app/acme/issue/SEC-123/title",
+		Title: "Fix the parser", Description: "The request may be inaccurate.",
+	}})
+	for _, expected := range []string{"untrusted remediation requests", "SEC-123", "Fix the parser", "may be inaccurate"} {
+		if !strings.Contains(input, expected) {
+			t.Fatalf("rendered input missing %q: %s", expected, input)
+		}
+	}
+}
+
+func saveShortcutScan(t *testing.T, state, target string, started time.Time, title string) *scan.Result {
+	t.Helper()
+	inventory, err := scan.BuildInventory(target, scan.InventoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := scan.Finalize(inventory, nil, scan.Submission{
+		ThreatModel: "Untrusted callers can reach the application.",
+		Findings: []scan.FindingDraft{{
+			Title: title, Severity: scan.SeverityHigh, Confidence: scan.ConfidenceHigh,
+			CWEIDs: []string{"CWE-20"}, Summary: "The input is not validated.", Impact: "Unsafe behavior.",
+			Evidence: "app.go processes the input.", Remediation: "Validate the input.", AttackPath: "A caller supplies input.",
+			Locations: []scan.Location{{Path: "app.go", StartLine: 1, Role: "sink"}},
+		}},
+	}, scan.FinalizeOptions{
+		ScanID: scan.AllocateScanID(target, started), OutputDir: filepath.Join(state, "scan-"+started.UTC().Format("150405")),
+		Provider: "test", Model: "test", StartedAt: started, TargetMode: "repository",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := history.DefaultStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Add(result); err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func TestValidateRequiresInput(t *testing.T) {

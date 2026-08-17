@@ -2,6 +2,7 @@ package history
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -341,32 +342,85 @@ func LoadResult(record Record) (*scan.Result, error) {
 		return nil, fmt.Errorf("validate private output for scan %s: %w", record.ScanID, err)
 	}
 	result.OutDir = guard.Path()
-	artifacts := []struct {
-		name        string
-		destination any
-	}{
-		{name: "scan-manifest.json", destination: &result.Manifest},
-		{name: "findings.json", destination: &result.Findings},
-		{name: "coverage.json", destination: &result.Coverage},
-	}
-	for _, artifact := range artifacts {
-		name, destination := artifact.name, artifact.destination
+	readRequired := func(name string) ([]byte, error) {
 		data, err := output.ReadPrivateFile(guard, name)
 		if err != nil {
 			_, statErr := os.Lstat(filepath.Join(guard.Path(), name))
-			if os.IsNotExist(statErr) {
+			if errors.Is(err, os.ErrNotExist) || os.IsNotExist(statErr) {
 				return nil, fmt.Errorf("saved scan %s is missing required artifact %s; its output may be incomplete or damaged", record.ScanID, name)
 			}
-		}
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("saved scan %s is missing required artifact %s; its output may be incomplete or damaged", record.ScanID, name)
-		}
-		if err != nil {
 			return nil, fmt.Errorf("read %s for scan %s: %w", name, record.ScanID, err)
 		}
-		if err := json.Unmarshal(data, destination); err != nil {
-			return nil, fmt.Errorf("decode %s for scan %s: %w", name, record.ScanID, err)
+		return data, nil
+	}
+	manifestData, err := readRequired("scan-manifest.json")
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(manifestData, &result.Manifest); err != nil {
+		return nil, fmt.Errorf("decode scan-manifest.json for scan %s: %w", record.ScanID, err)
+	}
+	if result.Manifest.SchemaVersion != scan.SchemaVersion {
+		return nil, fmt.Errorf("saved scan %s uses unsupported schema version %q", record.ScanID, result.Manifest.SchemaVersion)
+	}
+	if result.Manifest.ScanID != record.ScanID {
+		return nil, fmt.Errorf("saved scan %s manifest has mismatched scan ID %q", record.ScanID, result.Manifest.ScanID)
+	}
+	if record.Status != "" && result.Manifest.Status != record.Status {
+		return nil, fmt.Errorf("saved scan %s manifest status differs from scan history", record.ScanID)
+	}
+	if record.Target != "" && !samePath(record.Target, result.Manifest.Target) {
+		return nil, fmt.Errorf("saved scan %s manifest target differs from scan history", record.ScanID)
+	}
+	requiredArtifacts := map[string]string{
+		"findings": "findings.json", "coverage": "coverage.json", "report": "report.md",
+		"sarif": "results.sarif", "log": "scan-log.jsonl",
+	}
+	for logical, name := range requiredArtifacts {
+		if result.Manifest.Artifacts[logical] != name {
+			return nil, fmt.Errorf("saved scan %s manifest does not declare required artifact %s", record.ScanID, name)
 		}
+	}
+	sealed := make(map[string][]byte, len(requiredArtifacts))
+	seenNames := make(map[string]struct{}, len(result.Manifest.Artifacts))
+	for _, name := range result.Manifest.Artifacts {
+		if filepath.Base(name) != name || name == "." || name == "" {
+			return nil, fmt.Errorf("saved scan %s manifest contains an unsafe artifact path", record.ScanID)
+		}
+		if _, duplicate := seenNames[name]; duplicate {
+			return nil, fmt.Errorf("saved scan %s manifest contains a duplicate artifact path", record.ScanID)
+		}
+		seenNames[name] = struct{}{}
+		data, readErr := readRequired(name)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if name != "scan-log.jsonl" {
+			expected := result.Manifest.ArtifactDigests[name]
+			digest := sha256.Sum256(data)
+			actual := fmt.Sprintf("sha256:%x", digest[:])
+			if expected == "" || expected != actual {
+				return nil, fmt.Errorf("saved scan %s artifact %s does not match its sealed digest", record.ScanID, name)
+			}
+		}
+		sealed[name] = data
+	}
+	for _, artifact := range []struct {
+		name        string
+		destination any
+	}{
+		{name: "findings.json", destination: &result.Findings},
+		{name: "coverage.json", destination: &result.Coverage},
+	} {
+		if err := json.Unmarshal(sealed[artifact.name], artifact.destination); err != nil {
+			return nil, fmt.Errorf("decode %s for scan %s: %w", artifact.name, record.ScanID, err)
+		}
+	}
+	if result.Findings.SchemaVersion != scan.SchemaVersion || result.Coverage.SchemaVersion != scan.SchemaVersion || result.Findings.ScanID != record.ScanID || result.Coverage.ScanID != record.ScanID {
+		return nil, fmt.Errorf("saved scan %s canonical artifact identities do not match its manifest", record.ScanID)
+	}
+	if len(result.Findings.Findings) != result.Manifest.FindingCount {
+		return nil, fmt.Errorf("saved scan %s canonical finding count does not match its manifest", record.ScanID)
 	}
 	if data, err := output.ReadPrivateFile(guard, "post-scan.json"); err == nil {
 		var advisory json.RawMessage

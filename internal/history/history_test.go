@@ -193,3 +193,41 @@ func TestLoadResultExplainsMissingSavedArtifacts(t *testing.T) {
 		t.Fatalf("unexpected missing-artifact error: %v", err)
 	}
 }
+
+func TestLoadResultRejectsArtifactChangedAfterSealing(t *testing.T) {
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "app.go"), []byte("package app\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := scan.BuildInventory(target, scan.InventoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Unix(300, 0)
+	result, err := scan.Finalize(inventory, nil, scan.Submission{ThreatModel: "Untrusted callers."}, scan.FinalizeOptions{
+		ScanID: scan.AllocateScanID(target, started), OutputDir: filepath.Join(t.TempDir(), "scan"),
+		Provider: "test", Model: "test", StartedAt: started,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := Record{
+		ScanID: result.Manifest.ScanID, Target: target, OutputDir: result.OutDir,
+		Status: result.Manifest.Status,
+	}
+	if _, err := LoadResult(record); err != nil {
+		t.Fatalf("sealed result was rejected: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(result.OutDir, "scan-log.jsonl"), []byte("{\"event\":\"post_scan.completed\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadResult(record); err != nil {
+		t.Fatalf("operational activity journal invalidated canonical seal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(result.OutDir, "findings.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadResult(record); err == nil || !strings.Contains(err.Error(), "does not match its sealed digest") {
+		t.Fatalf("modified artifact error = %v", err)
+	}
+}

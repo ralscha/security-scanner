@@ -160,8 +160,22 @@ func writeArtifacts(result *Result, guard *output.Guard) error {
 		{name: "report.md", data: renderMarkdown(result)},
 		{name: "results.sarif", data: mustJSON(buildSARIF(result.Findings))},
 		{name: "scan-log.jsonl", data: activityJSONL(result.Activity)},
-		{name: "scan-manifest.json", data: mustJSON(result.Manifest)},
 	}
+	result.Manifest.ArtifactDigests = make(map[string]string, len(artifacts)-1)
+	for _, artifact := range artifacts {
+		// The activity journal remains operational after canonical finalization
+		// (for example, to record a post-scan pass), so it is deliberately not
+		// part of the immutable result seal.
+		if artifact.name == "scan-log.jsonl" {
+			continue
+		}
+		digest := sha256.Sum256(artifact.data)
+		result.Manifest.ArtifactDigests[artifact.name] = fmt.Sprintf("sha256:%x", digest[:])
+	}
+	artifacts = append(artifacts, struct {
+		name string
+		data []byte
+	}{name: "scan-manifest.json", data: mustJSON(result.Manifest)})
 	for _, artifact := range artifacts {
 		if err := guard.Validate(); err != nil {
 			return fmt.Errorf("validate private output before writing %s: %w", artifact.name, err)

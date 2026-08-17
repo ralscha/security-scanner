@@ -154,24 +154,25 @@ type LaunchConfiguration struct {
 }
 
 type ScanManifest struct {
-	SchemaVersion string               `json:"schema_version"`
-	ScanID        string               `json:"scan_id"`
-	Status        string               `json:"status"`
-	Target        string               `json:"target"`
-	Provider      string               `json:"provider"`
-	Model         string               `json:"model"`
-	TargetMode    string               `json:"target_mode,omitempty"`
-	TargetRef     string               `json:"target_ref,omitempty"`
-	TargetPaths   []string             `json:"target_paths,omitempty"`
-	StartedAt     time.Time            `json:"started_at"`
-	CompletedAt   time.Time            `json:"completed_at"`
-	Artifacts     map[string]string    `json:"artifacts"`
-	FilesTotal    int                  `json:"files_total"`
-	FilesReviewed int                  `json:"files_reviewed"`
-	FindingCount  int                  `json:"finding_count"`
-	DurationMS    int64                `json:"duration_ms"`
-	Timings       TimingBreakdown      `json:"timings"`
-	LaunchConfig  *LaunchConfiguration `json:"launch_configuration,omitempty"`
+	SchemaVersion   string               `json:"schema_version"`
+	ScanID          string               `json:"scan_id"`
+	Status          string               `json:"status"`
+	Target          string               `json:"target"`
+	Provider        string               `json:"provider"`
+	Model           string               `json:"model"`
+	TargetMode      string               `json:"target_mode,omitempty"`
+	TargetRef       string               `json:"target_ref,omitempty"`
+	TargetPaths     []string             `json:"target_paths,omitempty"`
+	StartedAt       time.Time            `json:"started_at"`
+	CompletedAt     time.Time            `json:"completed_at"`
+	Artifacts       map[string]string    `json:"artifacts"`
+	ArtifactDigests map[string]string    `json:"artifact_digests"`
+	FilesTotal      int                  `json:"files_total"`
+	FilesReviewed   int                  `json:"files_reviewed"`
+	FindingCount    int                  `json:"finding_count"`
+	DurationMS      int64                `json:"duration_ms"`
+	Timings         TimingBreakdown      `json:"timings"`
+	LaunchConfig    *LaunchConfiguration `json:"launch_configuration,omitempty"`
 }
 
 type Result struct {

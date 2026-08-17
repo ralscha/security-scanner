@@ -13,12 +13,14 @@ This matrix is the implementation contract for the parity roadmap. A capability 
 | Severity policy | `scan --fail-on-severity` | Implemented | `internal/policy`, policy tests |
 | Stable exit semantics | process exit status | Implemented | `docs/EXIT_CODES.md`, CLI tests |
 | Safe output and archive | `--output-dir`, `--archive-existing` | Implemented | `internal/output`, output tests |
-| Scan history | `scans list/show/logs/rerun` | Implemented | unique scan-ID prefixes, private activity logs, history and CLI tests |
+| Scan history | `scans list/show/logs/rerun` | Implemented | unique scan-ID prefixes, latest/current-repository shortcuts, private activity logs, history and CLI tests |
 | Repository findings | `findings list` | Implemented | fingerprint aggregation, latest-scan state, triage suppression tests |
 | Finding matching and comparison | `scans match/compare` | Implemented | `internal/match`, matcher tests |
 | False-positive triage | `findings false-positive` | Implemented | `internal/triage`, persistence and CLI tests |
 | Validation | `validate` | Implemented | Eino reviewer, grounded-result validators and tests |
 | Patch assist | `patch` | Implemented | bounded proposal schema, non-overwriting export and tests |
+| Linear patch intake | `patch --linear-issue/--linear-project` | Implemented | redirect-safe read-only GraphQL client, workspace/filter validation and tests |
+| Linear publication | `publish scan --to linear` | Implemented (direct API) | sealed-history verification, exact issue rendering, durable batches/handoffs/receipts and tests |
 | Preflight and explicit auth | `scan preflight`, `scan --auth` | Implemented | `internal/preflight`, auth resolution tests |
 | Bulk orchestration | `bulk-scan` | Implemented | `internal/bulk`, JSON/CSV/list parsing, supervisor lock, resume/retry/budget tests |
 | Text knowledge bases | `--knowledge-base` in scan/preflight/dry-run/rerun/bulk | Implemented | `internal/knowledgebase`, read-only agent tools, drift and bounds tests |

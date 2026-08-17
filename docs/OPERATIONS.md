@@ -2,7 +2,7 @@
 
 ## State And Sensitive Data
 
-Scanner state defaults to the operating system user configuration directory and can be moved with `SECURITY_SCANNER_STATE_DIR`. It contains history and analyst triage. Each scan output also receives private `run-state.json` and an atomically rewritten activity journal before primary model execution. Scanner-owned directories and files are secured for the current operating-system user (`0700`/`0600` on POSIX and a protected current-user-only ACL on Windows), and their identity is rechecked before sensitive reads and writes. On POSIX, custom output also requires trusted ownership and no group- or world-writable non-sticky ancestor. Artifacts may contain sensitive snippets, knowledge-base material, checkpoint-coupled state, and threat-model context; restrict and expire them like source code.
+Scanner state defaults to the operating system user configuration directory and can be moved with `SECURITY_SCANNER_STATE_DIR`. It contains history, analyst triage, and Linear publication receipts/recovery handoffs. Each scan output also receives private `run-state.json` and an atomically rewritten activity journal before primary model execution. Scanner-owned directories and files are secured for the current operating-system user (`0700`/`0600` on POSIX and a protected current-user-only ACL on Windows), and their identity is rechecked before sensitive reads and writes. On POSIX, custom output also requires trusted ownership and no group- or world-writable non-sticky ancestor. Artifacts may contain sensitive snippets, knowledge-base material, checkpoint-coupled state, threat-model context, and published issue descriptions; restrict and expire them like source code.
 
 Credential-shaped values in runtime failures are redacted before CLI diagnostics, JSON progress events, model tool errors, scan activity logs, and bulk receipt persistence. Credentials passed for provider authentication are not written to scanner state; scan artifacts can still quote credential-like source text found in the repository and must be handled as sensitive.
 
@@ -33,6 +33,15 @@ Checkpoint resume and worker recovery are not operational features. Eino v0.9.13
 Eino provider adapters do not expose one consistent usage/cost record through `model.BaseChatModel`. The scanner therefore does not invent token or currency values; budget receipts clearly label operator estimates.
 
 User interruption returns `130`. Atomic artifacts and receipts use a destination-local temporary file followed by rename.
+
+Linear publication uses sequential batches of at most 20 concurrent mutations.
+Every settled mutation is atomically added to a private handoff before the next
+batch. A completed receipt is stored outside the sealed scan. Successful
+publication removes its temporary handoff; interruption or an inability to
+persist created issues deliberately retains the handoff and reports its exact
+recovery path. Recover that data before retrying, because a new publication run
+creates new issues rather than deduplicating existing ones. Linear API keys are
+never stored in handoffs, receipts, scan history, or canonical artifacts.
 
 Track scan duration, reviewed-file counts, coverage gaps, findings by severity, policy violations, retry/failure counts, and reserved bulk budget.
 

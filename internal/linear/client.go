@@ -94,7 +94,7 @@ func (c *Client) CreateIssue(ctx context.Context, input CreateIssueInput) (Issue
 		return Issue{}, err
 	}
 	if !response.IssueCreate.Success || strings.TrimSpace(response.IssueCreate.Issue.Identifier) == "" {
-		return Issue{}, fmt.Errorf("Linear did not create an issue")
+		return Issue{}, fmt.Errorf("linear did not create an issue")
 	}
 	return response.IssueCreate.Issue, nil
 }
@@ -117,7 +117,7 @@ func (c *Client) ResolveUser(ctx context.Context, email string) (string, error) 
 		return "", err
 	}
 	if len(response.Users.Nodes) != 1 || strings.TrimSpace(response.Users.Nodes[0].ID) == "" {
-		return "", fmt.Errorf("Linear could not resolve exactly one matching issue assignee")
+		return "", fmt.Errorf("linear could not resolve exactly one matching issue assignee")
 	}
 	return response.Users.Nodes[0].ID, nil
 }
@@ -136,7 +136,7 @@ func (c *Client) Issue(ctx context.Context, reference string) (Issue, error) {
 		return Issue{}, err
 	}
 	if response.Issue == nil || strings.TrimSpace(response.Issue.Identifier) == "" {
-		return Issue{}, fmt.Errorf("Linear issue %q was not found or is not accessible", id)
+		return Issue{}, fmt.Errorf("linear issue %q was not found or is not accessible", id)
 	}
 	if workspace != "" {
 		_, actualWorkspace, parseErr := ParseIssueReference(response.Issue.URL)
@@ -168,7 +168,7 @@ func (c *Client) ProjectIssues(ctx context.Context, projectName string, filter m
 		if len(projects.Projects.Nodes) > 1 {
 			state = "is ambiguous"
 		}
-		return nil, fmt.Errorf("Linear project %q %s", projectName, state)
+		return nil, fmt.Errorf("linear project %q %s", projectName, state)
 	}
 	if filter == nil {
 		filter = map[string]any{}
@@ -206,14 +206,14 @@ func (c *Client) ProjectIssues(ctx context.Context, projectName string, filter m
 			return nil, err
 		}
 		if page.Project == nil {
-			return nil, fmt.Errorf("Linear project %q was not found or is not accessible", projectName)
+			return nil, fmt.Errorf("linear project %q was not found or is not accessible", projectName)
 		}
 		issues = append(issues, page.Project.Issues.Nodes...)
 		if !page.Project.Issues.PageInfo.HasNextPage {
 			break
 		}
 		if page.Project.Issues.PageInfo.EndCursor == "" {
-			return nil, fmt.Errorf("Linear returned an invalid project issue page")
+			return nil, fmt.Errorf("linear returned an invalid project issue page")
 		}
 		after = page.Project.Issues.PageInfo.EndCursor
 	}
@@ -238,26 +238,26 @@ func ParseIssueFilter(input string) (map[string]any, error) {
 func ParseIssueReference(input string) (id, workspace string, err error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
-		return "", "", fmt.Errorf("Linear issue reference cannot be blank")
+		return "", "", fmt.Errorf("linear issue reference cannot be blank")
 	}
 	if !strings.HasPrefix(strings.ToLower(input), "http://") && !strings.HasPrefix(strings.ToLower(input), "https://") {
 		return input, "", nil
 	}
 	parsed, parseErr := url.Parse(input)
 	if parseErr != nil || !strings.EqualFold(parsed.Hostname(), "linear.app") {
-		return "", "", fmt.Errorf("Linear issue URL is invalid")
+		return "", "", fmt.Errorf("linear issue URL is invalid")
 	}
 	parts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
 	if len(parts) < 3 || !strings.EqualFold(parts[1], "issue") {
-		return "", "", fmt.Errorf("Linear issue URL is invalid")
+		return "", "", fmt.Errorf("linear issue URL is invalid")
 	}
 	identifier, unescapeErr := url.PathUnescape(parts[2])
 	if unescapeErr != nil || !validIdentifier(identifier) {
-		return "", "", fmt.Errorf("Linear issue URL is invalid")
+		return "", "", fmt.Errorf("linear issue URL is invalid")
 	}
 	workspace, unescapeErr = url.PathUnescape(parts[0])
 	if unescapeErr != nil || strings.TrimSpace(workspace) == "" {
-		return "", "", fmt.Errorf("Linear issue URL is invalid")
+		return "", "", fmt.Errorf("linear issue URL is invalid")
 	}
 	return identifier, strings.ToLower(workspace), nil
 }
@@ -268,7 +268,7 @@ func validIdentifier(value string) bool {
 		return false
 	}
 	for _, r := range value[:dash] {
-		if !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
 			return false
 		}
 	}
@@ -286,7 +286,7 @@ type graphqlError struct {
 
 func (c *Client) graphql(ctx context.Context, query string, variables map[string]any, destination any) error {
 	if c == nil || strings.TrimSpace(c.credential) == "" {
-		return fmt.Errorf("Linear authentication is required")
+		return fmt.Errorf("linear authentication is required")
 	}
 	payload, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
@@ -304,24 +304,26 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 	request.Header.Set("Content-Type", "application/json")
 	response, err := c.http.Do(request)
 	if err != nil {
-		return c.safeError("Linear request failed", err)
+		return c.safeError("linear request failed", err)
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close()
+	}()
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseSize+1))
 	if readErr != nil {
 		return c.safeError("read Linear response", readErr)
 	}
 	if len(body) > maxResponseSize {
-		return fmt.Errorf("Linear response exceeded the size limit")
+		return fmt.Errorf("linear response exceeded the size limit")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		switch response.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
-			return fmt.Errorf("Linear authentication failed")
+			return fmt.Errorf("linear authentication failed")
 		case http.StatusTooManyRequests:
-			return fmt.Errorf("Linear request was rate limited; wait and retry")
+			return fmt.Errorf("linear request was rate limited; wait and retry")
 		default:
-			return fmt.Errorf("Linear request failed with HTTP %d", response.StatusCode)
+			return fmt.Errorf("linear request failed with HTTP %d", response.StatusCode)
 		}
 	}
 	var envelope struct {
@@ -339,12 +341,12 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 			}
 		}
 		if len(messages) == 0 {
-			return fmt.Errorf("Linear request failed")
+			return fmt.Errorf("linear request failed")
 		}
-		return c.safeError("Linear request failed", errors.New(strings.Join(messages, "; ")))
+		return c.safeError("linear request failed", errors.New(strings.Join(messages, "; ")))
 	}
 	if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
-		return fmt.Errorf("Linear returned no data")
+		return fmt.Errorf("linear returned no data")
 	}
 	if err := json.Unmarshal(envelope.Data, destination); err != nil {
 		return fmt.Errorf("decode Linear data: %w", err)

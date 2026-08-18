@@ -214,10 +214,10 @@ func Publish(ctx context.Context, record history.Record, scanResult *scan.Result
 		result.Counts.Failed = len(result.Failed)
 		receiptPath, receiptErr := writeReceipt(stateDir, result, now().UTC())
 		if receiptErr != nil {
-			return result, fmt.Errorf("Linear publication was interrupted and its partial receipt could not be saved: %v; the publication handoff remains at %s; recover it before retrying to avoid creating duplicate issues: %w", receiptErr, handoff.file, ctx.Err())
+			return result, fmt.Errorf("linear publication was interrupted and its partial receipt could not be saved: %v; the publication handoff remains at %s; recover it before retrying to avoid creating duplicate issues: %w", receiptErr, handoff.file, ctx.Err())
 		}
 		result.ReceiptPath = receiptPath
-		return result, fmt.Errorf("Linear publication was interrupted; the publication handoff remains at %s; recover it before retrying to avoid creating duplicate issues: %w", handoff.file, ctx.Err())
+		return result, fmt.Errorf("linear publication was interrupted; the publication handoff remains at %s; recover it before retrying to avoid creating duplicate issues: %w", handoff.file, ctx.Err())
 	}
 
 	result.Counts.Created = len(result.Created)

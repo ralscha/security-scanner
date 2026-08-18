@@ -2157,7 +2157,7 @@ func (f *linearIssueListFlag) String() string { return strings.Join(*f, ",") }
 func (f *linearIssueListFlag) Set(value string) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return fmt.Errorf("Linear issue reference cannot be empty")
+		return fmt.Errorf("linear issue reference cannot be empty")
 	}
 	*f = append(*f, value)
 	return nil

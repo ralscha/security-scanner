@@ -95,6 +95,10 @@ func NewRepository(inv *scan.Inventory, tracker *ReadTracker) *Repository {
 	return &Repository{root: inv.Root, files: inv.Files, byPath: byPath, tracker: tracker}
 }
 
+func newScanRepositories(inv *scan.Inventory, auditTracker *ReadTracker) (audit, architecture *Repository) {
+	return NewRepository(inv, auditTracker), NewRepository(inv, NewReadTracker())
+}
+
 type listFilesArgs struct {
 	Offset int `json:"offset,omitempty" jsonschema:"description=Zero-based result offset,minimum=0"`
 	Limit  int `json:"limit,omitempty" jsonschema:"description=Maximum files to return,minimum=1,maximum=500"`

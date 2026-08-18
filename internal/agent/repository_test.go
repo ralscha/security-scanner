@@ -70,6 +70,25 @@ func TestRepositoryReadTrackingAndSearch(t *testing.T) {
 	}
 }
 
+func TestArchitectureReadsDoNotContributeToAuditCoverage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "app.go"), []byte("package app\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := scan.BuildInventory(root, scan.InventoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditTracker := NewReadTracker()
+	_, architecture := newScanRepositories(inv, auditTracker)
+	if _, err := architecture.readFile(context.Background(), readFileArgs{Path: "app.go"}); err != nil {
+		t.Fatal(err)
+	}
+	if auditTracker.Complete(inv.Files[0]) {
+		t.Fatal("architecture-only read counted as completed security-audit coverage")
+	}
+}
+
 func TestRepositoryRejectsContentChangedAfterInventory(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "app.go")

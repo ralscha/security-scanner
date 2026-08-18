@@ -19,22 +19,36 @@ func Resolve(name, protectedRoot string) (Executable, error) {
 		return Executable{}, fmt.Errorf("resolve protected root: %w", err)
 	}
 	entries := trustedPathEntries(root)
-	for _, entry := range entries {
-		for _, candidateName := range candidateNames(name) {
-			candidate := filepath.Join(entry, candidateName)
-			canonical, err := filepath.EvalSymlinks(candidate)
-			if err != nil || within(root, canonical) {
-				continue
-			}
-			info, err := os.Stat(canonical)
-			if err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
-				continue
-			}
-			return Executable{Path: canonical, Env: sanitizedEnvironment(entries)}, nil
+	pathLike := strings.ContainsAny(name, `/\`)
+	unsafeEntries := make(map[string]struct{})
+	executable := ""
+	for _, candidate := range executableCandidates(name, entries, pathLike, runtime.GOOS == "windows") {
+		canonical, err := filepath.EvalSymlinks(candidate.path)
+		if err != nil {
+			continue
 		}
+		if within(root, canonical) {
+			if candidate.entry != "" {
+				unsafeEntries[candidate.entry] = struct{}{}
+			}
+			continue
+		}
+		if !candidate.runnable {
+			continue
+		}
+		info, err := os.Stat(canonical)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+			continue
+		}
+		if executable == "" {
+			executable = canonical
+		}
+	}
+	if executable != "" {
+		return Executable{Path: executable, Env: sanitizedEnvironment(entries, unsafeEntries)}, nil
 	}
 	return Executable{}, fmt.Errorf("%s is not available on a trusted PATH", name)
 }
@@ -112,20 +126,72 @@ func GitEnvironment(environment []string, preserveConfiguration bool) []string {
 	return append(result, "GIT_ALLOW_PROTOCOL=")
 }
 
-func candidateNames(name string) []string {
-	if runtime.GOOS != "windows" {
-		return []string{name}
+type executableCandidate struct {
+	entry    string
+	path     string
+	runnable bool
+}
+
+type executableSuffix struct {
+	value    string
+	runnable bool
+}
+
+func executableCandidates(name string, entries []string, pathLike, windows bool) []executableCandidate {
+	suffixes := executableSuffixes(name, pathLike, windows)
+	if pathLike {
+		candidates := make([]executableCandidate, 0, len(suffixes))
+		for _, suffix := range suffixes {
+			path, err := filepath.Abs(name + suffix.value)
+			if err == nil {
+				candidates = append(candidates, executableCandidate{path: path, runnable: suffix.runnable})
+			}
+		}
+		return candidates
+	}
+	candidates := make([]executableCandidate, 0, len(entries)*len(suffixes))
+	for _, entry := range entries {
+		for _, suffix := range suffixes {
+			candidates = append(candidates, executableCandidate{
+				entry: entry, path: filepath.Join(entry, name+suffix.value), runnable: suffix.runnable,
+			})
+		}
+	}
+	return candidates
+}
+
+func executableSuffixes(name string, pathLike, windows bool) []executableSuffix {
+	if !windows {
+		return []executableSuffix{{runnable: true}}
 	}
 	extension := strings.ToLower(filepath.Ext(name))
 	if extension == ".exe" || extension == ".com" {
-		return []string{name}
+		return []executableSuffix{{runnable: true}}
 	}
-	return []string{name + ".exe", name + ".com"}
+	if pathLike {
+		if extension == "" {
+			return []executableSuffix{{value: ".exe", runnable: true}}
+		}
+		return []executableSuffix{{}}
+	}
+	return []executableSuffix{
+		{value: ".exe", runnable: true},
+		{value: ".com", runnable: true},
+		{value: ".bat"},
+		{value: ".cmd"},
+		{},
+	}
 }
 
-func sanitizedEnvironment(entries []string) []string {
+func sanitizedEnvironment(entries []string, unsafe map[string]struct{}) []string {
 	environment := WithoutVariables(os.Environ(), "PATH")
-	return append(environment, "PATH="+strings.Join(entries, string(os.PathListSeparator)))
+	trusted := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if _, excluded := unsafe[entry]; !excluded {
+			trusted = append(trusted, entry)
+		}
+	}
+	return append(environment, "PATH="+strings.Join(trusted, string(os.PathListSeparator)))
 }
 
 func canonicalPath(path string) (string, error) {

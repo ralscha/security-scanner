@@ -44,18 +44,23 @@ func (a *EinoAnalyzer) Analyze(ctx context.Context, userContext string) (scan.Su
 	if a.config.MaxIterations <= 0 {
 		a.config.MaxIterations = 80
 	}
-	repository := NewRepository(a.inventory, a.tracker)
+	repository, architectureRepository := newScanRepositories(a.inventory, a.tracker)
 	repositoryTools, err := repository.Tools()
 	if err != nil {
 		return scan.Submission{}, fmt.Errorf("create repository tools: %w", err)
 	}
 	analysisTools := append([]tool.BaseTool(nil), repositoryTools...)
+	architectureTools, err := architectureRepository.Tools()
+	if err != nil {
+		return scan.Submission{}, fmt.Errorf("create architecture repository tools: %w", err)
+	}
 	if a.config.KnowledgeBase != nil && len(a.config.KnowledgeBase.Documents) > 0 {
 		knowledgeTools, err := NewKnowledgeBase(a.config.KnowledgeBase, NewKnowledgeAccessTracker()).Tools()
 		if err != nil {
 			return scan.Submission{}, fmt.Errorf("create knowledge-base tools: %w", err)
 		}
 		analysisTools = append(analysisTools, knowledgeTools...)
+		architectureTools = append(architectureTools, knowledgeTools...)
 	}
 	store := NewSubmissionStore(a.inventory)
 	submitTool, err := store.Tool()
@@ -63,7 +68,7 @@ func (a *EinoAnalyzer) Analyze(ctx context.Context, userContext string) (scan.Su
 		return scan.Submission{}, fmt.Errorf("create submit tool: %w", err)
 	}
 
-	specialists, err := createSpecialists(ctx, a.chatModel, analysisTools, a.config.MaxIterations, a.config.FollowUpPrompt)
+	specialists, err := createSpecialists(ctx, a.chatModel, analysisTools, architectureTools, a.config.MaxIterations, a.config.FollowUpPrompt)
 	if err != nil {
 		return scan.Submission{}, err
 	}
@@ -122,16 +127,18 @@ func (a *EinoAnalyzer) Analyze(ctx context.Context, userContext string) (scan.Su
 	return submission, nil
 }
 
-func createSpecialists(ctx context.Context, chatModel model.BaseChatModel, tools []tool.BaseTool, maxIterations int, followUpPrompt string) ([]adk.Agent, error) {
+func createSpecialists(ctx context.Context, chatModel model.BaseChatModel, tools, architectureTools []tool.BaseTool, maxIterations int, followUpPrompt string) ([]adk.Agent, error) {
 	configs := []struct {
 		name        string
 		description string
 		instruction string
+		tools       []tool.BaseTool
 	}{
-		{name: "baseline", description: "Runs an independent general security audit without coordinator hypotheses", instruction: baselinePrompt},
-		{name: "discovery", description: "Investigates focused source-backed security questions and evidence paths", instruction: discoveryPrompt},
-		{name: "validation", description: "Adversarially validates or rejects vulnerability candidates", instruction: validationPrompt},
-		{name: "attack-path", description: "Establishes reachability, impact, severity, and remediation", instruction: attackPathPrompt},
+		{name: "baseline", description: "Runs an independent general security audit without coordinator hypotheses", instruction: baselinePrompt, tools: tools},
+		{name: "architecture", description: "Builds an independent source-backed architecture and threat model without contributing audit coverage", instruction: architecturePrompt, tools: architectureTools},
+		{name: "discovery", description: "Investigates focused source-backed security questions and evidence paths", instruction: discoveryPrompt, tools: tools},
+		{name: "validation", description: "Adversarially validates or rejects vulnerability candidates", instruction: validationPrompt, tools: tools},
+		{name: "attack-path", description: "Establishes reachability, impact, severity, and remediation", instruction: attackPathPrompt, tools: tools},
 	}
 	agents := make([]adk.Agent, 0, len(configs))
 	for _, cfg := range configs {
@@ -142,7 +149,7 @@ func createSpecialists(ctx context.Context, chatModel model.BaseChatModel, tools
 			Model:         chatModel,
 			MaxIterations: maxIterations,
 			ToolsConfig: adk.ToolsConfig{
-				ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools},
+				ToolsNodeConfig: compose.ToolsNodeConfig{Tools: cfg.tools},
 			},
 		})
 		if err != nil {

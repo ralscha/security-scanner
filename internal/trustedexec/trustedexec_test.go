@@ -83,6 +83,69 @@ func TestResolveAcceptsSafeRelativePathEntries(t *testing.T) {
 	}
 }
 
+func TestResolveDropsPathEntryWithProtectedExecutableAlias(t *testing.T) {
+	protectedRoot := t.TempDir()
+	aliasBin := t.TempDir()
+	trustedBin := t.TempDir()
+	name := executableName("git")
+	protectedExecutable := filepath.Join(protectedRoot, name)
+	if err := os.WriteFile(protectedExecutable, []byte("protected"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(protectedExecutable, filepath.Join(aliasBin, name)); err != nil {
+		t.Skipf("file symlinks are unavailable: %v", err)
+	}
+	trustedExecutable := filepath.Join(trustedBin, name)
+	if err := os.WriteFile(trustedExecutable, []byte("trusted"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", strings.Join([]string{aliasBin, trustedBin}, string(os.PathListSeparator)))
+
+	resolved, err := Resolve("git", protectedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(trustedExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Path != want {
+		t.Fatalf("resolved path = %q, want %q", resolved.Path, want)
+	}
+	pathValue := environmentValue(resolved.Env, "PATH")
+	if strings.Contains(strings.ToLower(pathValue), strings.ToLower(aliasBin)) ||
+		!strings.Contains(strings.ToLower(pathValue), strings.ToLower(trustedBin)) {
+		t.Fatalf("sanitized PATH = %q", pathValue)
+	}
+}
+
+func TestExecutableSuffixesMatchWindowsCreateProcessRules(t *testing.T) {
+	bare := executableSuffixes("git", false, true)
+	if len(bare) != 5 || bare[0].value != ".exe" || !bare[0].runnable ||
+		bare[1].value != ".com" || !bare[1].runnable ||
+		bare[2].value != ".bat" || bare[2].runnable ||
+		bare[3].value != ".cmd" || bare[3].runnable || bare[4].runnable {
+		t.Fatalf("unexpected bare Windows candidates: %#v", bare)
+	}
+	explicit := executableSuffixes(filepath.Join("tools", "python"), true, true)
+	if len(explicit) != 1 || explicit[0].value != ".exe" || !explicit[0].runnable {
+		t.Fatalf("unexpected extensionless explicit Windows candidate: %#v", explicit)
+	}
+	batch := executableSuffixes(filepath.Join("tools", "python.cmd"), true, true)
+	if len(batch) != 1 || batch[0].value != "" || batch[0].runnable {
+		t.Fatalf("unexpected explicit batch candidate: %#v", batch)
+	}
+}
+
+func TestSanitizedEnvironmentDropsUnsafePathEntries(t *testing.T) {
+	first, second := filepath.Join("trusted", "first"), filepath.Join("trusted", "second")
+	environment := sanitizedEnvironment([]string{first, second}, map[string]struct{}{first: {}})
+	got := environmentValue(environment, "PATH")
+	if strings.Contains(got, first) || !strings.Contains(got, second) {
+		t.Fatalf("sanitized PATH = %q", got)
+	}
+}
+
 func TestGitEnvironmentScopesConfiguration(t *testing.T) {
 	environment := []string{
 		"KEEP=ok", "GIT_DIR=unsafe", "git_shallow_file=unsafe", "GIT_ALLOW_PROTOCOL=ext",

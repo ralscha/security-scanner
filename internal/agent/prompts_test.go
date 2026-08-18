@@ -36,7 +36,9 @@ func TestCoordinatorInstructionIncludesCustomPrompt(t *testing.T) {
 func TestCoordinatorUsesIndependentBaselineAndFocusedInvestigations(t *testing.T) {
 	for _, required := range []string{
 		"independent general audit", "before sharing any threat hypotheses",
+		"independent architecture review", "architecture mapping",
 		"focused investigation packets", "Combine baseline and focused-investigation candidates once",
+		"meaningful new capability", "configuration precedence", "Reconcile every material threat scenario",
 	} {
 		if !strings.Contains(coordinatorPrompt, required) {
 			t.Fatalf("coordinator prompt is missing %q", required)
@@ -44,6 +46,15 @@ func TestCoordinatorUsesIndependentBaselineAndFocusedInvestigations(t *testing.T
 	}
 	if !strings.Contains(baselinePrompt, "without relying on coordinator-generated hypotheses") {
 		t.Fatal("baseline prompt does not preserve an independent audit")
+	}
+	if !strings.Contains(architecturePrompt, "Architecture mapping is not completed security-audit coverage") ||
+		!strings.Contains(architecturePrompt, "canonical threat model") ||
+		!strings.Contains(architecturePrompt, "Never reproduce credential material") {
+		t.Fatal("architecture prompt does not preserve source-backed threat-model boundaries")
+	}
+	if !strings.Contains(baselinePrompt, "paths you fully security-audited") ||
+		!strings.Contains(discoveryPrompt, "paths you fully security-audited") {
+		t.Fatal("audit specialists do not report exact reviewed paths")
 	}
 	if !strings.Contains(discoveryPrompt, "assigned source-backed security packet") || !strings.Contains(discoveryPrompt, "counterevidence") {
 		t.Fatal("discovery prompt does not define focused, adversarial investigations")

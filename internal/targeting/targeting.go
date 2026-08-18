@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"security-scanner/internal/trustedexec"
+	"security-scanner/internal/userpath"
 )
 
 type Selector struct {
@@ -46,7 +47,11 @@ func Resolve(ctx context.Context, root string, selector Selector) (Resolution, e
 	if err := selector.Validate(); err != nil {
 		return Resolution{}, err
 	}
-	absRoot, err := filepath.Abs(root)
+	expandedRoot, err := userpath.ExpandHome(root)
+	if err != nil {
+		return Resolution{}, fmt.Errorf("resolve target: %w", err)
+	}
+	absRoot, err := filepath.Abs(expandedRoot)
 	if err != nil {
 		return Resolution{}, fmt.Errorf("resolve target: %w", err)
 	}

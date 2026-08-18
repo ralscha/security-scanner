@@ -25,6 +25,7 @@ import (
 	"security-scanner/internal/redact"
 	"security-scanner/internal/runstate"
 	"security-scanner/internal/scan"
+	"security-scanner/internal/userpath"
 )
 
 type Options struct {
@@ -690,7 +691,11 @@ func PrepareContext(ctx context.Context, opts Options, started time.Time) (*Prep
 	if opts.Target == "" {
 		opts.Target = "."
 	}
-	absTarget, err := filepath.Abs(opts.Target)
+	expandedTarget, err := userpath.ExpandHome(opts.Target)
+	if err != nil {
+		return nil, fmt.Errorf("resolve target: %w", err)
+	}
+	absTarget, err := filepath.Abs(expandedTarget)
 	if err != nil {
 		return nil, fmt.Errorf("resolve target: %w", err)
 	}
@@ -703,7 +708,7 @@ func PrepareContext(ctx context.Context, opts Options, started time.Time) (*Prep
 		if err != nil {
 			return nil, err
 		}
-	} else if opts.OutputDir, err = filepath.Abs(opts.OutputDir); err != nil {
+	} else if opts.OutputDir, err = output.ResolvePath(opts.OutputDir); err != nil {
 		return nil, fmt.Errorf("resolve output directory: %w", err)
 	}
 	if samePath(absTarget, opts.OutputDir) {

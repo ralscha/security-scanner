@@ -114,6 +114,27 @@ func TestDefaultScanDirPreservesCaseOnCaseSensitiveSystems(t *testing.T) {
 	}
 }
 
+func TestStateDirExpandsConfiguredHome(t *testing.T) {
+	home := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	} else {
+		t.Setenv("HOME", home)
+	}
+	t.Setenv("SECURITY_SCANNER_STATE_DIR", `~\scanner-state`)
+	got, err := StateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := ResolvePath(filepath.Join(home, "scanner-state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameCanonicalPath(got, want) {
+		t.Fatalf("state directory = %q, want %q", got, want)
+	}
+}
+
 func TestValidateRequiresArchiveForNonEmptyOutput(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(t.TempDir(), "report")

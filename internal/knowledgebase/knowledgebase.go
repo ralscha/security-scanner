@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"security-scanner/internal/userpath"
 )
 
 const (
@@ -310,18 +312,12 @@ func resolveRoot(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("knowledge-base path cannot be empty")
 	}
-	if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		if path == "~" {
-			path = home
-		} else {
-			path = filepath.Join(home, path[2:])
-		}
-	} else if strings.HasPrefix(path, "~") {
+	if strings.HasPrefix(path, "~") && path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, `~\`) {
 		return "", fmt.Errorf("knowledge-base path does not support other-user home expansion: %s", path)
+	}
+	path, err := userpath.ExpandHome(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve knowledge-base path: %w", err)
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {

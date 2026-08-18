@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"security-scanner/internal/trustedexec"
+	"security-scanner/internal/userpath"
 )
 
 // Guard pins a private directory to the filesystem object that was prepared.
@@ -110,7 +111,11 @@ func Validate(_ context.Context, _, destination string, archiveExisting bool) (s
 // ResolvePath returns an absolute path beneath its canonical existing ancestor.
 // The final path itself may not be a symlink.
 func ResolvePath(path string) (string, error) {
-	absPath, err := filepath.Abs(path)
+	expanded, err := userpath.ExpandHome(path)
+	if err != nil {
+		return "", err
+	}
+	absPath, err := filepath.Abs(expanded)
 	if err != nil {
 		return "", fmt.Errorf("resolve path: %w", err)
 	}

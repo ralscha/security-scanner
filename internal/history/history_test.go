@@ -119,15 +119,15 @@ func TestRepositoryFindingsTracksLatestAndDismissedIdentities(t *testing.T) {
 	}
 	results := map[string]*scan.Result{
 		"scan-old": {Findings: scan.FindingsDocument{Findings: []scan.Finding{
-			{ID: "F-OLD-CONFIRMED", Fingerprint: "confirmed", FindingDraft: scan.FindingDraft{Title: "Confirmed issue", Severity: scan.SeverityHigh}},
-			{ID: "F-OLD-HISTORICAL", Fingerprint: "historical", FindingDraft: scan.FindingDraft{Title: "Historical issue", Severity: scan.SeverityMedium}},
-			{ID: "F-OLD-DISMISSED", Fingerprint: "dismissed", FindingDraft: scan.FindingDraft{Title: "Dismissed issue", Severity: scan.SeverityCritical}},
+			{ID: "F-OLD-CONFIRMED", Fingerprint: "confirmed", Title: "Confirmed issue", Severity: scan.SeverityHigh},
+			{ID: "F-OLD-HISTORICAL", Fingerprint: "historical", Title: "Historical issue", Severity: scan.SeverityMedium},
+			{ID: "F-OLD-DISMISSED", Fingerprint: "dismissed", Title: "Dismissed issue", Severity: scan.SeverityCritical},
 		}}},
 		"scan-middle": {Findings: scan.FindingsDocument{Findings: []scan.Finding{
-			{ID: "F-MIDDLE-HISTORICAL", Fingerprint: "historical", FindingDraft: scan.FindingDraft{Title: "Historical issue", Severity: scan.SeverityMedium}},
+			{ID: "F-MIDDLE-HISTORICAL", Fingerprint: "historical", Title: "Historical issue", Severity: scan.SeverityMedium},
 		}}},
 		"scan-latest": {Findings: scan.FindingsDocument{Findings: []scan.Finding{
-			{ID: "F-LATEST-CONFIRMED", Fingerprint: "confirmed", FindingDraft: scan.FindingDraft{Title: "Confirmed issue", Severity: scan.SeverityHigh}},
+			{ID: "F-LATEST-CONFIRMED", Fingerprint: "confirmed", Title: "Confirmed issue", Severity: scan.SeverityHigh},
 		}}},
 	}
 	decisions := []triage.Decision{{

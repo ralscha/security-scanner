@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -138,8 +139,8 @@ func resolveAvailablePath(path string) (string, error) {
 	for {
 		resolved, err := filepath.EvalSymlinks(current)
 		if err == nil {
-			for i := len(missing) - 1; i >= 0; i-- {
-				resolved = filepath.Join(resolved, missing[i])
+			for _, m := range slices.Backward(missing) {
+				resolved = filepath.Join(resolved, m)
 			}
 			return resolved, nil
 		}
@@ -256,18 +257,18 @@ func createMissingDirectories(path string) (bool, error) {
 		missing = append(missing, current)
 		current = parent
 	}
-	for i := len(missing) - 1; i >= 0; i-- {
+	for _, m := range slices.Backward(missing) {
 		created := false
-		if err := os.Mkdir(missing[i], 0o700); err == nil {
+		if err := os.Mkdir(m, 0o700); err == nil {
 			created = true
 		} else if !os.IsExist(err) {
 			return false, fmt.Errorf("create private directory: %w", err)
 		}
-		info, err := os.Lstat(missing[i])
+		info, err := os.Lstat(m)
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return false, fmt.Errorf("created private path is not a non-symlink directory: %s", missing[i])
+			return false, fmt.Errorf("created private path is not a non-symlink directory: %s", m)
 		}
-		if err := preparePrivateDirectory(missing[i], created, true); err != nil {
+		if err := preparePrivateDirectory(m, created, true); err != nil {
 			return false, err
 		}
 	}

@@ -38,8 +38,8 @@ func TestMarkReopenedUsesOlderHistory(t *testing.T) {
 }
 
 func TestCompareDoesNotMatchCaseDistinctPaths(t *testing.T) {
-	before := scan.FindingsDocument{ScanID: "before", Findings: []scan.Finding{{FindingDraft: scan.FindingDraft{Title: "Issue", CWEIDs: []string{"CWE-20"}, Locations: []scan.Location{{Path: "Foo.go"}}}}}}
-	after := scan.FindingsDocument{ScanID: "after", Findings: []scan.Finding{{FindingDraft: scan.FindingDraft{Title: "Issue", CWEIDs: []string{"CWE-20"}, Locations: []scan.Location{{Path: "foo.go"}}}}}}
+	before := scan.FindingsDocument{ScanID: "before", Findings: []scan.Finding{{Title: "Issue", CWEIDs: []string{"CWE-20"}, Locations: []scan.Location{{Path: "Foo.go"}}}}}
+	after := scan.FindingsDocument{ScanID: "after", Findings: []scan.Finding{{Title: "Issue", CWEIDs: []string{"CWE-20"}, Locations: []scan.Location{{Path: "foo.go"}}}}}
 	comparison := Compare(before, after)
 	if len(comparison.Persisting) != 0 || len(comparison.New) != 1 || len(comparison.Resolved) != 1 {
 		t.Fatalf("case-distinct paths matched: %#v", comparison)
@@ -47,7 +47,6 @@ func TestCompareDoesNotMatchCaseDistinctPaths(t *testing.T) {
 }
 
 func finding(id, fingerprint, title, cwe, path string) scan.Finding {
-	return scan.Finding{ID: id, Fingerprint: fingerprint, FindingDraft: scan.FindingDraft{
-		Title: title, CWEIDs: []string{cwe}, Locations: []scan.Location{{Path: path, Role: "sink"}},
-	}}
+	return scan.Finding{ID: id, Fingerprint: fingerprint,
+		Title: title, CWEIDs: []string{cwe}, Locations: []scan.Location{{Path: path, Role: "sink"}}}
 }

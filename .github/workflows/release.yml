@@ -83,7 +83,7 @@ jobs:
         run: go vet ./...
 
       - name: Run lint
-        run: docker run --rm -v "$PWD:/app" -w /app golangci/golangci-lint:v2.12.2@sha256:6ffe652d2215f590fcf6c6edcda8959c7a765a09378c200d31e098f7516f16c9 golangci-lint run --timeout 10m
+        run: docker run --rm -v "$PWD:/app" -w /app golangci/golangci-lint:v2.13.1@sha256:6ffe652d2215f590fcf6c6edcda8959c7a765a09378c200d31e098f7516f16c9 golangci-lint run --timeout 10m
 
   release:
     if: github.repository == 'ralscha/security-scanner'

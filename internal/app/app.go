@@ -153,8 +153,7 @@ func (e *AnalysisError) Error() string { return e.Err.Error() }
 func (e *AnalysisError) Unwrap() error { return e.Err }
 
 func AttemptsFromError(err error) int {
-	var analysisErr *AnalysisError
-	if errors.As(err, &analysisErr) {
+	if analysisErr, ok := errors.AsType[*AnalysisError](err); ok {
 		return analysisErr.Attempts
 	}
 	return 0
@@ -426,11 +425,9 @@ func Run(ctx context.Context, opts Options) (*scan.Result, error) {
 	})
 	if err != nil {
 		class := recovery.ClassInternal
-		var invalid *scan.InvalidSubmissionError
-		var drift *scan.InventoryDriftError
-		if errors.As(err, &invalid) {
+		if _, ok := errors.AsType[*scan.InvalidSubmissionError](err); ok {
 			class = recovery.ClassInvalidSubmission
-		} else if errors.As(err, &drift) {
+		} else if _, ok := errors.AsType[*scan.InventoryDriftError](err); ok {
 			class = recovery.ClassInventoryDrift
 		}
 		activity.recordEvent(scan.ActivityEvent{Timestamp: time.Now(), Event: "scan.failed", Phase: "finalizing", ErrorClass: string(class), Message: err.Error()})

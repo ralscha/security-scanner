@@ -9,9 +9,9 @@ import (
 
 func TestEvaluateSeverityThreshold(t *testing.T) {
 	findings := []scan.Finding{
-		{ID: "critical", FindingDraft: scan.FindingDraft{Severity: scan.SeverityCritical}},
-		{ID: "medium", FindingDraft: scan.FindingDraft{Severity: scan.SeverityMedium}},
-		{ID: "low", FindingDraft: scan.FindingDraft{Severity: scan.SeverityLow}},
+		{ID: "critical", Severity: scan.SeverityCritical},
+		{ID: "medium", Severity: scan.SeverityMedium},
+		{ID: "low", Severity: scan.SeverityLow},
 	}
 	evaluation := Evaluate(findings, scan.SeverityMedium)
 	if !evaluation.Violated || !reflect.DeepEqual(evaluation.Matches, []string{"critical", "medium"}) {

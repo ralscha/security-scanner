@@ -234,12 +234,10 @@ func publicationFixture(t *testing.T, count int) (history.Record, *scan.Result) 
 	for index := 1; index <= count; index++ {
 		findings = append(findings, scan.Finding{
 			ID: fmt.Sprintf("F-%d", index), Fingerprint: fmt.Sprintf("fingerprint-%d", index),
-			FindingDraft: scan.FindingDraft{
-				Title: fmt.Sprintf("Finding %d", index), Severity: scan.SeverityHigh, Confidence: scan.ConfidenceHigh,
-				CWEIDs: []string{"CWE-79"}, Summary: "Summary", Impact: "Impact", Evidence: "Evidence",
-				Remediation: "Remediation", AttackPath: "Attack path",
-				Locations: []scan.Location{{Path: "src/main.go", StartLine: 10, EndLine: 12, Role: "sink", Snippet: "unsafe(```)"}},
-			},
+			Title: fmt.Sprintf("Finding %d", index), Severity: scan.SeverityHigh, Confidence: scan.ConfidenceHigh,
+			CWEIDs: []string{"CWE-79"}, Summary: "Summary", Impact: "Impact", Evidence: "Evidence",
+			Remediation: "Remediation", AttackPath: "Attack path",
+			Locations: []scan.Location{{Path: "src/main.go", StartLine: 10, EndLine: 12, Role: "sink", Snippet: "unsafe(```)"}},
 		})
 	}
 	result := &scan.Result{

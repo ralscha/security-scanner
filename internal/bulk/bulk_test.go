@@ -18,7 +18,7 @@ import (
 )
 
 func TestPendingReceiptUsesOmitZero(t *testing.T) {
-	data, err := json.Marshal(JobReceipt{Job: Job{ID: "repo-1", Target: "repo"}, Status: "pending"})
+	data, err := json.Marshal(JobReceipt{ID: "repo-1", Target: "repo", Status: "pending"})
 	if err != nil {
 		t.Fatal(err)
 	}

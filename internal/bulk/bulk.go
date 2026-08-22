@@ -672,8 +672,7 @@ func Transient(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
 	}
-	var classified *recovery.Error
-	if errors.As(err, &classified) {
+	if classified, ok := errors.AsType[*recovery.Error](err); ok {
 		return classified.Retryable
 	}
 	message := strings.ToLower(err.Error())

@@ -57,8 +57,7 @@ func Classify(err error) (Class, bool) {
 	if err == nil {
 		return "", false
 	}
-	var classified *Error
-	if errors.As(err, &classified) {
+	if classified, ok := errors.AsType[*Error](err); ok {
 		return classified.Class, classified.Retryable
 	}
 	if errors.Is(err, context.Canceled) {
@@ -68,11 +67,9 @@ func Classify(err error) (Class, bool) {
 		return ClassDeadline, false
 	}
 	var status int
-	var httpStatus httpStatusCode
-	var conventionalStatus statusCode
-	if errors.As(err, &httpStatus) {
+	if httpStatus, ok := errors.AsType[httpStatusCode](err); ok {
 		status = httpStatus.HTTPStatusCode()
-	} else if errors.As(err, &conventionalStatus) {
+	} else if conventionalStatus, ok := errors.AsType[statusCode](err); ok {
 		status = conventionalStatus.StatusCode()
 	} else {
 		status = reflectedStatusCode(err)

@@ -132,10 +132,7 @@ func Publish(ctx context.Context, record history.Record, scanResult *scan.Result
 	completed := 0
 	var progressMu sync.Mutex
 	for start := 0; start < len(prepared.Issues) && ctx.Err() == nil; start += batchSize {
-		end := start + batchSize
-		if end > len(prepared.Issues) {
-			end = len(prepared.Issues)
-		}
+		end := min(start+batchSize, len(prepared.Issues))
 		batch := prepared.Issues[start:end]
 		outcomes := make([]publishOutcome, len(batch))
 		var group sync.WaitGroup

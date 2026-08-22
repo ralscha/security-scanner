@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -176,9 +177,7 @@ func (c *Client) ProjectIssues(ctx context.Context, projectName string, filter m
 	if _, hasState := filter["state"]; !hasState {
 		withDefault := make(map[string]any, len(filter)+1)
 		withDefault["state"] = map[string]any{"type": map[string]any{"nin": []string{"completed", "canceled"}}}
-		for key, value := range filter {
-			withDefault[key] = value
-		}
+		maps.Copy(withDefault, filter)
 		filter = withDefault
 	}
 	issues := make([]Issue, 0)

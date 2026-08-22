@@ -525,8 +525,8 @@ func buildSARIFRule(ruleID string, findings []Finding) sarifRule {
 		for _, cwe := range finding.CWEIDs {
 			cwes[cwe] = struct{}{}
 			upper := strings.ToUpper(cwe)
-			if strings.HasPrefix(upper, "CWE-") {
-				if number, err := strconv.Atoi(strings.TrimPrefix(upper, "CWE-")); err == nil && number > 0 {
+			if after, ok := strings.CutPrefix(upper, "CWE-"); ok {
+				if number, err := strconv.Atoi(after); err == nil && number > 0 {
 					tags[fmt.Sprintf("external/cwe/cwe-%03d", number)] = struct{}{}
 				}
 			}

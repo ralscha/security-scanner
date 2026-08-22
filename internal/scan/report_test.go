@@ -94,8 +94,8 @@ func TestFinalizeWritesContractAndSARIF(t *testing.T) {
 
 func TestBuildSARIFUsesHighestSeverityForSharedRule(t *testing.T) {
 	doc := FindingsDocument{SchemaVersion: SchemaVersion, ScanID: "scan-1", Findings: []Finding{
-		{FindingDraft: FindingDraft{Title: "Low issue", Severity: SeverityLow, CWEIDs: []string{"CWE-79"}, Remediation: "Encode output."}},
-		{FindingDraft: FindingDraft{Title: "High issue", Severity: SeverityHigh, CWEIDs: []string{"CWE-79"}, Remediation: "Use a safe template API."}},
+		{Title: "Low issue", Severity: SeverityLow, CWEIDs: []string{"CWE-79"}, Remediation: "Encode output."},
+		{Title: "High issue", Severity: SeverityHigh, CWEIDs: []string{"CWE-79"}, Remediation: "Use a safe template API."},
 	}}
 	sarif := buildSARIF(doc, CoverageDocument{})
 	if len(sarif.Runs) != 1 || len(sarif.Runs[0].Tool.Driver.Rules) != 1 {

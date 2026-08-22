@@ -179,7 +179,7 @@ func pathsUnderRoot(root, gitRoot string, outputs [][]byte) ([]string, error) {
 			}
 			repositoryPath := filepath.FromSlash(string(raw))
 			if err := userpath.ValidateWindowsPath(repositoryPath); err != nil {
-				return nil, fmt.Errorf("Git returned a non-portable path: %w", err)
+				return nil, fmt.Errorf("git returned a non-portable path: %w", err)
 			}
 			absolute := filepath.Join(gitRoot, repositoryPath)
 			if _, err := os.Stat(absolute); err != nil {

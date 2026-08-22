@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -47,17 +48,9 @@ func Resolve(ctx context.Context, root string, selector Selector) (Resolution, e
 	if err := selector.Validate(); err != nil {
 		return Resolution{}, err
 	}
-	expandedRoot, err := userpath.ExpandHome(root)
+	absRoot, err := userpath.ResolveExisting(root)
 	if err != nil {
 		return Resolution{}, fmt.Errorf("resolve target: %w", err)
-	}
-	absRoot, err := filepath.Abs(expandedRoot)
-	if err != nil {
-		return Resolution{}, fmt.Errorf("resolve target: %w", err)
-	}
-	absRoot, err = filepath.EvalSymlinks(absRoot)
-	if err != nil {
-		return Resolution{}, fmt.Errorf("resolve target symlinks: %w", err)
 	}
 	if len(selector.Paths) > 0 {
 		paths, err := resolvePaths(absRoot, selector.Paths)
@@ -78,7 +71,6 @@ func resolvePaths(root string, values []string) ([]string, error) {
 	paths := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
-		value = strings.TrimSpace(value)
 		if value == "" {
 			return nil, fmt.Errorf("--path cannot be empty")
 		}
@@ -86,7 +78,7 @@ func resolvePaths(root string, values []string) ([]string, error) {
 		if !filepath.IsAbs(candidate) {
 			candidate = filepath.Join(root, candidate)
 		}
-		resolved, err := filepath.EvalSymlinks(candidate)
+		resolved, err := userpath.ResolveExisting(candidate)
 		if err != nil {
 			return nil, fmt.Errorf("resolve path %q: %w", value, err)
 		}
@@ -109,7 +101,7 @@ func gitPaths(ctx context.Context, root, mode, ref string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("target is not in a git worktree: %w", err)
 	}
-	gitRoot, err := filepath.EvalSymlinks(strings.TrimSpace(string(gitRootBytes)))
+	gitRoot, err := userpath.ResolveExisting(trimGitOutputTerminator(gitRootBytes, runtime.GOOS == "windows"))
 	if err != nil {
 		return nil, fmt.Errorf("resolve git root: %w", err)
 	}
@@ -142,7 +134,7 @@ func gitPaths(ctx context.Context, root, mode, ref string) ([]string, error) {
 		}
 		outputs = append(outputs, tracked, untracked)
 	}
-	return pathsUnderRoot(root, gitRoot, outputs), nil
+	return pathsUnderRoot(root, gitRoot, outputs)
 }
 
 func resolveGitCommit(ctx context.Context, gitRoot, ref string) (string, error) {
@@ -178,14 +170,18 @@ func validateCommittedDiffCheckout(ctx context.Context, gitRoot string) error {
 	return nil
 }
 
-func pathsUnderRoot(root, gitRoot string, outputs [][]byte) []string {
+func pathsUnderRoot(root, gitRoot string, outputs [][]byte) ([]string, error) {
 	seen := make(map[string]struct{})
 	for _, output := range outputs {
 		for raw := range bytes.SplitSeq(output, []byte{0}) {
 			if len(raw) == 0 {
 				continue
 			}
-			absolute := filepath.Join(gitRoot, filepath.FromSlash(string(raw)))
+			repositoryPath := filepath.FromSlash(string(raw))
+			if err := userpath.ValidateWindowsPath(repositoryPath); err != nil {
+				return nil, fmt.Errorf("Git returned a non-portable path: %w", err)
+			}
+			absolute := filepath.Join(gitRoot, repositoryPath)
 			if _, err := os.Stat(absolute); err != nil {
 				continue
 			}
@@ -201,7 +197,17 @@ func pathsUnderRoot(root, gitRoot string, outputs [][]byte) []string {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
-	return paths
+	return paths, nil
+}
+
+func trimGitOutputTerminator(output []byte, windows bool) string {
+	if len(output) > 0 && output[len(output)-1] == '\n' {
+		output = output[:len(output)-1]
+		if windows && len(output) > 0 && output[len(output)-1] == '\r' {
+			output = output[:len(output)-1]
+		}
+	}
+	return string(output)
 }
 
 func runGit(ctx context.Context, dir string, args ...string) ([]byte, error) {

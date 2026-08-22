@@ -233,7 +233,11 @@ Each scan writes:
 - `findings.json`: threat model and normalized findings.
 - `coverage.json`: one outcome for every inventoried file.
 - `report.md`: human-readable report derived from the canonical documents.
-- `results.sarif`: SARIF 2.1.0 results for code scanning integrations.
+- `results.sarif`: SARIF 2.1.0 results for code scanning integrations. Rules
+  include GitHub-compatible security severity, CWE tags, remediation help, and
+  stable finding fingerprints. Its invocation reports `executionSuccessful`
+  only when file coverage is complete; incomplete scans retain their findings
+  and include warning notifications.
 - `scan-log.jsonl`: redacted lifecycle, preparation, and agent-activity events.
 - `run-state.json`: private durable lifecycle and primary-attempt state, created before model analysis.
 

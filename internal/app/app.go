@@ -688,17 +688,9 @@ func PrepareContext(ctx context.Context, opts Options, started time.Time) (*Prep
 	if opts.Target == "" {
 		opts.Target = "."
 	}
-	expandedTarget, err := userpath.ExpandHome(opts.Target)
+	absTarget, err := userpath.ResolveExisting(opts.Target)
 	if err != nil {
 		return nil, fmt.Errorf("resolve target: %w", err)
-	}
-	absTarget, err := filepath.Abs(expandedTarget)
-	if err != nil {
-		return nil, fmt.Errorf("resolve target: %w", err)
-	}
-	absTarget, err = filepath.EvalSymlinks(absTarget)
-	if err != nil {
-		return nil, fmt.Errorf("resolve target symlinks: %w", err)
 	}
 	if opts.OutputDir == "" {
 		opts.OutputDir, err = output.DefaultScanDir(absTarget, started)
@@ -782,6 +774,11 @@ func PrepareContext(ctx context.Context, opts Options, started time.Time) (*Prep
 }
 
 func samePath(left, right string) bool {
+	left, leftErr := userpath.ResolveIfExists(left)
+	right, rightErr := userpath.ResolveIfExists(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
 	rel, err := filepath.Rel(filepath.Clean(left), filepath.Clean(right))
 	return err == nil && rel == "."
 }

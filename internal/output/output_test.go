@@ -135,6 +135,16 @@ func TestStateDirExpandsConfiguredHome(t *testing.T) {
 	}
 }
 
+func TestResolvePathRejectsWindowsAmbiguousComponent(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific path semantics")
+	}
+	path := filepath.Join(t.TempDir(), "NUL.txt", "report")
+	if _, err := ResolvePath(path); err == nil || !strings.Contains(err.Error(), "Windows-ambiguous") {
+		t.Fatalf("ambiguous Windows path error = %v", err)
+	}
+}
+
 func TestValidateRequiresArchiveForNonEmptyOutput(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(t.TempDir(), "report")

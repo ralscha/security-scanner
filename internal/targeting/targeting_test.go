@@ -2,10 +2,12 @@ package targeting
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -103,6 +105,52 @@ func TestResolveGitDiffIgnoresRepositoryEnvironmentOverrides(t *testing.T) {
 	t.Setenv("GIT_SHALLOW_FILE", filepath.Join(t.TempDir(), "missing-shallow-file"))
 	if _, err := Resolve(context.Background(), root, Selector{DiffRef: base}); err != nil {
 		t.Fatalf("repository override affected diff resolution: %v", err)
+	}
+}
+
+func TestTrimGitOutputTerminatorPreservesPathWhitespace(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		input   string
+		windows bool
+		want    string
+	}{
+		{name: "posix space", input: "/tmp/repo \n", want: "/tmp/repo "},
+		{name: "posix carriage return", input: "/tmp/repo\r\n", want: "/tmp/repo\r"},
+		{name: "windows CRLF", input: `C:\repo` + "\r\n", windows: true, want: `C:\repo`},
+		{name: "no terminator", input: "/tmp/repo\t", want: "/tmp/repo\t"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := trimGitOutputTerminator([]byte(test.input), test.windows); got != test.want {
+				t.Fatalf("trimGitOutputTerminator(%q) = %q, want %q", test.input, got, test.want)
+			}
+		})
+	}
+}
+
+func TestResolveGitWorktreePreservesTrailingWhitespace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not support these path spellings")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is unavailable")
+	}
+	for _, suffix := range []string{" ", "\r"} {
+		t.Run(fmt.Sprintf("suffix-%x", suffix), func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "repository"+suffix)
+			if err := os.Mkdir(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			runTestGit(t, root, "init")
+			runTestGit(t, root, "config", "user.email", "scanner@example.invalid")
+			runTestGit(t, root, "config", "user.name", "Scanner Test")
+			writeTargetFile(t, root, "tracked.go", "package sample\n")
+			runTestGit(t, root, "add", "tracked.go")
+			runTestGit(t, root, "commit", "-m", "initial")
+			if _, err := Resolve(context.Background(), root, Selector{WorkingTree: true}); err != nil {
+				t.Fatalf("resolve worktree ending in %q: %v", suffix, err)
+			}
+		})
 	}
 }
 

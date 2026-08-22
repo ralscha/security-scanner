@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,7 +160,7 @@ func writeArtifacts(result *Result, guard *output.Guard) error {
 		{name: "findings.json", data: mustJSON(result.Findings)},
 		{name: "coverage.json", data: mustJSON(result.Coverage)},
 		{name: "report.md", data: renderMarkdown(result)},
-		{name: "results.sarif", data: mustJSON(buildSARIF(result.Findings))},
+		{name: "results.sarif", data: mustJSON(buildSARIF(result.Findings, result.Coverage))},
 		{name: "scan-log.jsonl", data: activityJSONL(result.Activity)},
 	}
 	result.Manifest.ArtifactDigests = make(map[string]string, len(artifacts)-1)
@@ -355,8 +357,25 @@ type sarifLog struct {
 }
 
 type sarifRun struct {
-	Tool    sarifTool     `json:"tool"`
-	Results []sarifResult `json:"results"`
+	Tool              sarifTool              `json:"tool"`
+	AutomationDetails sarifAutomationDetails `json:"automationDetails"`
+	Results           []sarifResult          `json:"results"`
+	Invocations       []sarifInvocation      `json:"invocations"`
+	Properties        map[string]string      `json:"properties,omitempty"`
+}
+
+type sarifAutomationDetails struct {
+	ID string `json:"id"`
+}
+
+type sarifInvocation struct {
+	ExecutionSuccessful        bool                `json:"executionSuccessful"`
+	ToolExecutionNotifications []sarifNotification `json:"toolExecutionNotifications,omitempty"`
+}
+
+type sarifNotification struct {
+	Level   string       `json:"level"`
+	Message sarifMessage `json:"message"`
 }
 
 type sarifTool struct {
@@ -370,17 +389,27 @@ type sarifDriver struct {
 }
 
 type sarifRule struct {
-	ID               string       `json:"id"`
-	Name             string       `json:"name"`
-	ShortDescription sarifMessage `json:"shortDescription"`
+	ID               string                  `json:"id"`
+	Name             string                  `json:"name"`
+	ShortDescription sarifMessage            `json:"shortDescription"`
+	FullDescription  sarifMessage            `json:"fullDescription"`
+	Help             sarifMultiformatMessage `json:"help"`
+	Properties       map[string]any          `json:"properties"`
+}
+
+type sarifMultiformatMessage struct {
+	Text     string `json:"text"`
+	Markdown string `json:"markdown,omitempty"`
 }
 
 type sarifResult struct {
 	RuleID              string            `json:"ruleId"`
+	RuleIndex           int               `json:"ruleIndex"`
 	Level               string            `json:"level"`
 	Message             sarifMessage      `json:"message"`
 	Locations           []sarifLocation   `json:"locations"`
 	PartialFingerprints map[string]string `json:"partialFingerprints"`
+	Properties          map[string]any    `json:"properties"`
 }
 
 type sarifMessage struct {
@@ -389,6 +418,7 @@ type sarifMessage struct {
 
 type sarifLocation struct {
 	PhysicalLocation sarifPhysicalLocation `json:"physicalLocation"`
+	Message          *sarifMessage         `json:"message,omitempty"`
 }
 
 type sarifPhysicalLocation struct {
@@ -405,38 +435,196 @@ type sarifRegion struct {
 	EndLine   int `json:"endLine,omitempty"`
 }
 
-func buildSARIF(doc FindingsDocument) sarifLog {
-	rules := make(map[string]sarifRule)
+func buildSARIF(doc FindingsDocument, coverage CoverageDocument) sarifLog {
+	findingsByRule := make(map[string][]Finding)
+	for _, finding := range doc.Findings {
+		ruleID := sarifRuleID(finding)
+		findingsByRule[ruleID] = append(findingsByRule[ruleID], finding)
+	}
+	ruleIDs := make([]string, 0, len(findingsByRule))
+	for ruleID := range findingsByRule {
+		ruleIDs = append(ruleIDs, ruleID)
+	}
+	sort.Strings(ruleIDs)
+	rules := make([]sarifRule, 0, len(ruleIDs))
+	ruleIndexes := make(map[string]int, len(ruleIDs))
+	for index, ruleID := range ruleIDs {
+		ruleIndexes[ruleID] = index
+		rules = append(rules, buildSARIFRule(ruleID, findingsByRule[ruleID]))
+	}
 	results := make([]sarifResult, 0, len(doc.Findings))
 	for _, finding := range doc.Findings {
-		ruleID := "SECURITY"
-		if len(finding.CWEIDs) > 0 {
-			ruleID = finding.CWEIDs[0]
-		}
-		rules[ruleID] = sarifRule{ID: ruleID, Name: ruleID, ShortDescription: sarifMessage{Text: finding.Title}}
-		locations := make([]sarifLocation, 0, len(finding.Locations))
-		for _, loc := range finding.Locations {
-			locations = append(locations, sarifLocation{PhysicalLocation: sarifPhysicalLocation{
-				ArtifactLocation: sarifArtifactLocation{URI: loc.Path},
-				Region:           sarifRegion{StartLine: loc.StartLine, EndLine: loc.EndLine},
-			}})
+		ruleID := sarifRuleID(finding)
+		fingerprints := map[string]string{"security-scanner/finding-id": finding.ID}
+		if finding.Fingerprint != "" {
+			fingerprints["security-scanner/v1"] = finding.Fingerprint
 		}
 		results = append(results, sarifResult{
 			RuleID:              ruleID,
+			RuleIndex:           ruleIndexes[ruleID],
 			Level:               sarifLevel(finding.Severity),
-			Message:             sarifMessage{Text: finding.Title + ": " + finding.Summary},
-			Locations:           locations,
-			PartialFingerprints: map[string]string{"security-scanner/finding-id": finding.ID},
+			Message:             sarifMessage{Text: sarifFindingMessage(finding)},
+			Locations:           sarifLocations(finding),
+			PartialFingerprints: fingerprints,
+			Properties: map[string]any{
+				"confidence": string(finding.Confidence), "findingId": finding.ID,
+				"severity": string(finding.Severity), "cwe": append([]string(nil), finding.CWEIDs...),
+			},
 		})
 	}
-	ruleList := make([]sarifRule, 0, len(rules))
-	for _, rule := range rules {
-		ruleList = append(ruleList, rule)
+	complete := coverage.Summary.Unreviewed == 0
+	invocation := sarifInvocation{ExecutionSuccessful: complete}
+	coverageState := "complete"
+	if !complete {
+		coverageState = "incomplete"
+		reasons := make(map[string]struct{})
+		for _, file := range coverage.Files {
+			if file.Outcome == "unreviewed" && strings.TrimSpace(file.Reason) != "" {
+				reasons[strings.TrimSpace(file.Reason)] = struct{}{}
+			}
+		}
+		if len(reasons) == 0 {
+			reasons["Scan coverage is incomplete; results may be incomplete."] = struct{}{}
+		}
+		ordered := make([]string, 0, len(reasons))
+		for reason := range reasons {
+			ordered = append(ordered, reason)
+		}
+		sort.Strings(ordered)
+		for _, reason := range ordered {
+			invocation.ToolExecutionNotifications = append(invocation.ToolExecutionNotifications, sarifNotification{
+				Level: "warning", Message: sarifMessage{Text: reason},
+			})
+		}
 	}
-	sort.Slice(ruleList, func(i, j int) bool { return ruleList[i].ID < ruleList[j].ID })
 	return sarifLog{Version: "2.1.0", Schema: "https://json.schemastore.org/sarif-2.1.0.json", Runs: []sarifRun{{
-		Tool: sarifTool{Driver: sarifDriver{Name: "security-scanner", Rules: ruleList}}, Results: results,
+		Tool:              sarifTool{Driver: sarifDriver{Name: "security-scanner", Rules: rules}},
+		AutomationDetails: sarifAutomationDetails{ID: doc.ScanID}, Results: results,
+		Invocations: []sarifInvocation{invocation},
+		Properties:  map[string]string{"securityScannerSchemaVersion": doc.SchemaVersion, "securityScannerCoverage": coverageState},
 	}}}
+}
+
+func sarifRuleID(finding Finding) string {
+	if len(finding.CWEIDs) > 0 {
+		return finding.CWEIDs[0]
+	}
+	return "SECURITY"
+}
+
+func buildSARIFRule(ruleID string, findings []Finding) sarifRule {
+	name := sarifLabel(ruleID)
+	cwes := make(map[string]struct{})
+	remediations := make(map[string]struct{})
+	tags := map[string]struct{}{"security": {}}
+	maxSeverity := SeverityInfo
+	for _, finding := range findings {
+		if severityRank(finding.Severity) > severityRank(maxSeverity) {
+			maxSeverity = finding.Severity
+		}
+		for _, cwe := range finding.CWEIDs {
+			cwes[cwe] = struct{}{}
+			upper := strings.ToUpper(cwe)
+			if strings.HasPrefix(upper, "CWE-") {
+				if number, err := strconv.Atoi(strings.TrimPrefix(upper, "CWE-")); err == nil && number > 0 {
+					tags[fmt.Sprintf("external/cwe/cwe-%03d", number)] = struct{}{}
+				}
+			}
+		}
+		if remediation := strings.TrimSpace(finding.Remediation); remediation != "" {
+			remediations[remediation] = struct{}{}
+		}
+	}
+	orderedCWEs := sortedSet(cwes)
+	description := name + "."
+	if len(orderedCWEs) > 0 {
+		description += " Weaknesses: " + strings.Join(orderedCWEs, ", ") + "."
+	}
+	remediation := strings.Join(sortedSet(remediations), "\n\n")
+	helpText := description
+	if remediation != "" {
+		helpText += "\n\nRemediation:\n\n" + remediation
+	}
+	properties := map[string]any{"tags": sortedSet(tags)}
+	if score := sarifSecurityScore(maxSeverity); score > 0 {
+		properties["security-severity"] = strconv.FormatFloat(score, 'f', 1, 64)
+	}
+	return sarifRule{
+		ID: ruleID, Name: name, ShortDescription: sarifMessage{Text: name}, FullDescription: sarifMessage{Text: description},
+		Help:       sarifMultiformatMessage{Text: helpText, Markdown: strings.Replace(helpText, "\n\nRemediation:\n\n", "\n\n## Remediation\n\n", 1)},
+		Properties: properties,
+	}
+}
+
+func sarifLabel(value string) string {
+	acronyms := map[string]struct{}{"api": {}, "csrf": {}, "html": {}, "http": {}, "id": {}, "rce": {}, "sql": {}, "ssrf": {}, "url": {}, "xml": {}, "xss": {}}
+	words := strings.FieldsFunc(value, func(r rune) bool { return r == '-' || r == '_' || r == '.' || r == '/' })
+	for index, word := range words {
+		if _, ok := acronyms[strings.ToLower(word)]; ok {
+			words[index] = strings.ToUpper(word)
+		}
+	}
+	label := strings.Join(words, " ")
+	if label == "" {
+		return value
+	}
+	return strings.ToUpper(label[:1]) + label[1:]
+}
+
+func sarifFindingMessage(finding Finding) string {
+	parts := []string{finding.Title, finding.Summary, "Severity: " + string(finding.Severity)}
+	if len(finding.CWEIDs) > 0 {
+		parts = append(parts, "Weaknesses: "+strings.Join(finding.CWEIDs, ", "))
+	}
+	parts = append(parts, "Remediation:\n"+finding.Remediation)
+	return strings.Join(parts, "\n\n")
+}
+
+func sarifLocations(finding Finding) []sarifLocation {
+	ordered := make([]Location, 0, len(finding.Locations))
+	for _, location := range finding.Locations {
+		if location.Role == "root_control" {
+			ordered = append(ordered, location)
+		}
+	}
+	for _, location := range finding.Locations {
+		if location.Role != "root_control" {
+			ordered = append(ordered, location)
+		}
+	}
+	locations := make([]sarifLocation, 0, len(ordered))
+	seen := make(map[string]struct{}, len(ordered))
+	for _, location := range ordered {
+		key := fmt.Sprintf("%s\x00%d\x00%d", location.Path, location.StartLine, location.EndLine)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		role := (*sarifMessage)(nil)
+		if location.Role != "" {
+			role = &sarifMessage{Text: location.Role}
+		}
+		locations = append(locations, sarifLocation{PhysicalLocation: sarifPhysicalLocation{
+			ArtifactLocation: sarifArtifactLocation{URI: (&url.URL{Path: location.Path}).EscapedPath()},
+			Region:           sarifRegion{StartLine: location.StartLine, EndLine: location.EndLine},
+		}, Message: role})
+	}
+	return locations
+}
+
+func sortedSet(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func sarifSecurityScore(severity Severity) float64 {
+	return map[Severity]float64{
+		SeverityCritical: 9.5, SeverityHigh: 8.0, SeverityMedium: 5.0, SeverityLow: 2.0, SeverityInfo: 0.0,
+	}[severity]
 }
 
 func sarifLevel(severity Severity) string {

@@ -63,6 +63,30 @@ func TestStoreAddListAndGet(t *testing.T) {
 	}
 }
 
+func TestStoreListCanonicalizesTargetAlias(t *testing.T) {
+	realTarget := filepath.Join(t.TempDir(), "repository")
+	if err := os.Mkdir(realTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "repository-alias")
+	if err := os.Symlink(realTarget, alias); err != nil {
+		t.Skipf("directory symlinks are unavailable: %v", err)
+	}
+	store := NewStore(filepath.Join(t.TempDir(), "history", "index.json"))
+	if err := store.Add(&scan.Result{Manifest: scan.ScanManifest{
+		ScanID: "scan-alias", Target: realTarget, StartedAt: time.Now(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.List(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ScanID != "scan-alias" {
+		t.Fatalf("alias lookup returned %#v", records)
+	}
+}
+
 func TestStoreReplacesDuplicateScanID(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "index.json"))
 	result := &scan.Result{Manifest: scan.ScanManifest{ScanID: "same", Target: t.TempDir(), StartedAt: time.Now()}}

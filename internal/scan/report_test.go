@@ -27,20 +27,20 @@ func TestFinalizeRequiresAllocatedScanID(t *testing.T) {
 
 func TestFinalizeWritesContractAndSARIF(t *testing.T) {
 	root := t.TempDir()
-	writeTestFile(t, root, "app.go", []byte("package app\nfunc run() {}\n"))
+	writeTestFile(t, root, "app file.go", []byte("package app\nfunc run() {}\n"))
 	writeTestFile(t, root, "logo.bin", []byte{1, 0, 2})
 	inv, err := BuildInventory(root, InventoryOptions{MaxFileBytes: 1024})
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "report")
-	result, err := Finalize(inv, completeTracker{"app.go": true}, Submission{
+	result, err := Finalize(inv, completeTracker{"app file.go": true}, Submission{
 		ThreatModel: "Untrusted callers can invoke the application.",
 		Findings: []FindingDraft{{
 			Title: "Example issue", Severity: SeverityMedium, Confidence: ConfidenceHigh, CWEIDs: []string{"CWE-20"},
 			Summary: "Input is not validated.", Impact: "Unexpected behavior", Evidence: "run lacks validation",
 			Remediation: "Validate input.", AttackPath: "Caller invokes run.",
-			Locations: []Location{{Path: "app.go", StartLine: 2, Role: "root_control"}},
+			Locations: []Location{{Path: "app file.go", StartLine: 2, Role: "root_control"}},
 		}},
 	}, FinalizeOptions{ScanID: AllocateScanID(root, time.Unix(100, 0)), OutputDir: out, Provider: "test-provider", Model: "test-model", StartedAt: time.Unix(100, 0)})
 	if err != nil {
@@ -61,12 +61,50 @@ func TestFinalizeWritesContractAndSARIF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sarif map[string]any
+	var sarif sarifLog
 	if err := json.Unmarshal(data, &sarif); err != nil {
 		t.Fatal(err)
 	}
-	if sarif["version"] != "2.1.0" {
-		t.Fatalf("unexpected SARIF version: %#v", sarif["version"])
+	if sarif.Version != "2.1.0" || len(sarif.Runs) != 1 {
+		t.Fatalf("unexpected SARIF envelope: %#v", sarif)
+	}
+	run := sarif.Runs[0]
+	if run.AutomationDetails.ID != result.Manifest.ScanID || len(run.Invocations) != 1 || !run.Invocations[0].ExecutionSuccessful {
+		t.Fatalf("unexpected SARIF lifecycle: %#v", run)
+	}
+	if run.Properties["securityScannerCoverage"] != "complete" || len(run.Tool.Driver.Rules) != 1 || len(run.Results) != 1 {
+		t.Fatalf("unexpected SARIF projection: %#v", run)
+	}
+	rule := run.Tool.Driver.Rules[0]
+	properties, err := json.Marshal(rule.Properties)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.ID != "CWE-20" || rule.Name != "CWE 20" || rule.Properties["security-severity"] != "5.0" ||
+		!strings.Contains(string(properties), "external/cwe/cwe-020") || !strings.Contains(rule.Help.Markdown, "## Remediation") {
+		t.Fatalf("unexpected SARIF rule: %#v", rule)
+	}
+	sarifResult := run.Results[0]
+	if sarifResult.RuleIndex != 0 || sarifResult.PartialFingerprints["security-scanner/v1"] != result.Findings.Findings[0].Fingerprint ||
+		!strings.Contains(sarifResult.Message.Text, "Remediation:") || sarifResult.Locations[0].PhysicalLocation.ArtifactLocation.URI != "app%20file.go" ||
+		sarifResult.Locations[0].Message == nil || sarifResult.Locations[0].Message.Text != "root_control" {
+		t.Fatalf("unexpected SARIF result: %#v", sarifResult)
+	}
+}
+
+func TestBuildSARIFUsesHighestSeverityForSharedRule(t *testing.T) {
+	doc := FindingsDocument{SchemaVersion: SchemaVersion, ScanID: "scan-1", Findings: []Finding{
+		{FindingDraft: FindingDraft{Title: "Low issue", Severity: SeverityLow, CWEIDs: []string{"CWE-79"}, Remediation: "Encode output."}},
+		{FindingDraft: FindingDraft{Title: "High issue", Severity: SeverityHigh, CWEIDs: []string{"CWE-79"}, Remediation: "Use a safe template API."}},
+	}}
+	sarif := buildSARIF(doc, CoverageDocument{})
+	if len(sarif.Runs) != 1 || len(sarif.Runs[0].Tool.Driver.Rules) != 1 {
+		t.Fatalf("unexpected shared-rule SARIF: %#v", sarif)
+	}
+	rule := sarif.Runs[0].Tool.Driver.Rules[0]
+	if rule.Properties["security-severity"] != "8.0" ||
+		!strings.Contains(rule.Help.Text, "Encode output.") || !strings.Contains(rule.Help.Text, "Use a safe template API.") {
+		t.Fatalf("shared rule did not retain maximum severity and remediation: %#v", rule)
 	}
 }
 
@@ -85,6 +123,19 @@ func TestFinalizeMarksIncompleteCoverage(t *testing.T) {
 	}
 	if result.Manifest.Status != "completed_with_gaps" || result.Coverage.Summary.Unreviewed != 1 {
 		t.Fatalf("incomplete coverage was not surfaced: %#v", result)
+	}
+	data, err := os.ReadFile(filepath.Join(result.OutDir, "results.sarif"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sarif sarifLog
+	if err := json.Unmarshal(data, &sarif); err != nil {
+		t.Fatal(err)
+	}
+	run := sarif.Runs[0]
+	if len(run.Invocations) != 1 || run.Invocations[0].ExecutionSuccessful || len(run.Invocations[0].ToolExecutionNotifications) == 0 ||
+		run.Properties["securityScannerCoverage"] != "incomplete" {
+		t.Fatalf("incomplete SARIF lifecycle = %#v", run)
 	}
 }
 

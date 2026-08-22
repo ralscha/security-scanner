@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	gitignore "github.com/git-pkgs/gitignore"
+
+	"security-scanner/internal/userpath"
 )
 
 var defaultExcludedDirs = map[string]struct{}{
@@ -37,13 +39,9 @@ type InventoryOptions struct {
 }
 
 func BuildInventory(root string, opts InventoryOptions) (*Inventory, error) {
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := userpath.ResolveExisting(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve target: %w", err)
-	}
-	absRoot, err = filepath.EvalSymlinks(absRoot)
-	if err != nil {
-		return nil, fmt.Errorf("resolve target symlinks: %w", err)
 	}
 	info, err := os.Stat(absRoot)
 	if err != nil {
@@ -88,6 +86,9 @@ func BuildInventory(root string, opts InventoryOptions) (*Inventory, error) {
 		rel = filepath.ToSlash(rel)
 		if rel == "." {
 			return nil
+		}
+		if err := userpath.ValidateWindowsPath(rel); err != nil {
+			return fmt.Errorf("inventory path is not portable: %w", err)
 		}
 		if entry.IsDir() {
 			skip, forced := directoryDisposition(rel, entry.Name(), outputRel, excludes, includes)

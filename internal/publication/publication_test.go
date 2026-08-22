@@ -16,6 +16,20 @@ import (
 	"security-scanner/internal/scan"
 )
 
+func TestSamePathCanonicalizesAlias(t *testing.T) {
+	real := filepath.Join(t.TempDir(), "scan")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "scan-alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Skipf("directory symlinks are unavailable: %v", err)
+	}
+	if !samePath(alias, real) {
+		t.Fatalf("canonical alias %q did not match %q", alias, real)
+	}
+}
+
 func TestPrepareRendersTraceableLinearIssuesAndPriorities(t *testing.T) {
 	record, result := publicationFixture(t, 5)
 	severities := []scan.Severity{scan.SeverityCritical, scan.SeverityHigh, scan.SeverityMedium, scan.SeverityLow, scan.SeverityInfo}

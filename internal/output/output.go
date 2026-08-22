@@ -120,6 +120,9 @@ func ResolvePath(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve path: %w", err)
 	}
+	if err := userpath.ValidateWindowsPath(absPath); err != nil {
+		return "", err
+	}
 	if strings.IndexFunc(absPath, func(r rune) bool {
 		return r < 0x20 || r == 0x7f || r == '\u2028' || r == '\u2029'
 	}) >= 0 {
@@ -130,7 +133,14 @@ func ResolvePath(path string) (string, error) {
 	} else if statErr != nil && !os.IsNotExist(statErr) {
 		return "", fmt.Errorf("inspect path: %w", statErr)
 	}
-	return resolveAvailablePath(absPath)
+	resolved, err := resolveAvailablePath(absPath)
+	if err != nil {
+		return "", err
+	}
+	if err := userpath.ValidateWindowsPath(resolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
 }
 
 func resolveAvailablePath(path string) (string, error) {

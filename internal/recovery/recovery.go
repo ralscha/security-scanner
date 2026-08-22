@@ -50,8 +50,14 @@ func Wrap(class Class, retryable bool, err error) error {
 }
 
 type temporary interface{ Temporary() bool }
-type httpStatusCode interface{ HTTPStatusCode() int }
-type statusCode interface{ StatusCode() int }
+type httpStatusCode interface {
+	error
+	HTTPStatusCode() int
+}
+type statusCode interface {
+	error
+	StatusCode() int
+}
 
 func Classify(err error) (Class, bool) {
 	if err == nil {

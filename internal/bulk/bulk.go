@@ -21,6 +21,7 @@ import (
 	outputpolicy "security-scanner/internal/output"
 	"security-scanner/internal/recovery"
 	"security-scanner/internal/redact"
+	"security-scanner/internal/userpath"
 )
 
 type Job struct {
@@ -215,11 +216,7 @@ func normalizeJobs(jobs []Job) ([]Job, error) {
 		if target == "" {
 			return nil, fmt.Errorf("bulk input contains an empty repository")
 		}
-		absolute, err := filepath.Abs(target)
-		if err != nil {
-			return nil, err
-		}
-		absolute, err = filepath.EvalSymlinks(absolute)
+		absolute, err := userpath.ResolveExisting(target)
 		if err != nil {
 			return nil, fmt.Errorf("resolve repository %q: %w", job.Target, err)
 		}

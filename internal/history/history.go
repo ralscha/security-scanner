@@ -17,6 +17,7 @@ import (
 	"security-scanner/internal/output"
 	"security-scanner/internal/scan"
 	"security-scanner/internal/triage"
+	"security-scanner/internal/userpath"
 )
 
 const schemaVersion = "1"
@@ -140,7 +141,7 @@ func (s *Store) List(target string) ([]Record, error) {
 	if strings.TrimSpace(target) == "" {
 		return append([]Record(nil), index.Scans...), nil
 	}
-	absTarget, err := filepath.Abs(target)
+	absTarget, err := userpath.ResolveIfExists(target)
 	if err != nil {
 		return nil, fmt.Errorf("resolve history target: %w", err)
 	}
@@ -325,6 +326,11 @@ func (s *Store) save(index Index) error {
 }
 
 func samePath(left, right string) bool {
+	left, leftErr := userpath.ResolveIfExists(left)
+	right, rightErr := userpath.ResolveIfExists(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
 	rel, err := filepath.Rel(filepath.Clean(left), filepath.Clean(right))
 	return err == nil && rel == "."
 }

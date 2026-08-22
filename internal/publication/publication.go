@@ -8,6 +8,7 @@ import (
 
 	"security-scanner/internal/history"
 	"security-scanner/internal/scan"
+	"security-scanner/internal/userpath"
 )
 
 type Destination struct {
@@ -202,6 +203,11 @@ func fencedCode(code string) string {
 }
 
 func samePath(left, right string) bool {
+	left, leftErr := userpath.ResolveIfExists(left)
+	right, rightErr := userpath.ResolveIfExists(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
 	rel, err := filepath.Rel(filepath.Clean(left), filepath.Clean(right))
 	return err == nil && rel == "."
 }
